@@ -1,2 +1,2 @@
-# private-eye
-A privacy-preserving web tool for optical character recognition in image-based documents
+# Private Eye
+A client-side web tool for privacy-preserving optical character recognition of image-based documents 

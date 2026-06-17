@@ -1,0 +1,21 @@
+# Prototype (reference only — not a build input)
+app-export/
+
+# Dependencies & build output
+node_modules/
+dist/
+out/
+
+# Runtime model weights (fetched from HuggingFace; never committed)
+models/
+
+# Vendored build artifacts staged into public/ by scripts/prepare-build.ts
+# (the COI worker, logos, and committed calibration.json stay tracked)
+public/ort/
+public/wllama-patched/
+public/models/layout/
+
+# Misc
+.DS_Store
+*.log
+.idea

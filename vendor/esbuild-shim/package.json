@@ -1,0 +1,20 @@
+{
+  "name": "esbuild",
+  "version": "0.25.12",
+  "description": "Local shim that routes Vite's esbuild usage to esbuild-wasm with lazy auto-initialize. Lets the toolchain build with no native esbuild binary (macOS Tahoe / locked-down machines kill or fail to resolve the native binary). Pure WASM is portable and runs everywhere, at some build-speed cost.",
+  "private": true,
+  "main": "./index.cjs",
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "esbuild-wasm": "0.25.12"
+  }
+}
