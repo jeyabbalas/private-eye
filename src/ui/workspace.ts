@@ -10,11 +10,9 @@
 import { QuickClient } from '../workers/client.ts';
 import { ProcessingQueue, type QueueEvent } from '../orchestrate/queue.ts';
 import { ingestFiles } from '../orchestrate/ingest.ts';
-import { pageImageBlob } from '../orchestrate/raster.ts';
 import {
   allDocuments,
   deleteDocumentCascade,
-  getResult,
   pagesByDocument,
   pagesByStatus,
   putPage,
@@ -32,8 +30,7 @@ import {
   type PageId,
   type PageRecord,
 } from '../orchestrate/types.ts';
-import { mdToHtml } from '../runtime/markdown.ts';
-import { log } from '../runtime/logger.ts';
+import { ReviewSurface } from '../review/surface.ts';
 import { showErrorModal, showModal } from './modal.ts';
 import { escapeHtml } from './progress.ts';
 import { CASE_CLOSED, stageMessage, WARMING } from './copy.ts';
@@ -53,7 +50,7 @@ export class Workspace {
   private readonly rollupEls = new Map<string, HTMLElement>();
 
   private selectedPageId: PageId | null = null;
-  private previewUrl: string | null = null;
+  private surface: ReviewSurface | null = null;
   private ready = false;
 
   // status bar
@@ -340,11 +337,11 @@ export class Workspace {
     const v = this.el.querySelector<HTMLElement>('.pe-viewer');
     if (!v) return;
 
-    this.revokePreview();
+    this.teardownSurface();
 
     if (!this.selectedPageId) {
       v.innerHTML = `<div class="pe-viewer-empty">${escapeHtml(
-        'Select a finished page to see what Private Eye read.',
+        'Select a finished page to review what Private Eye read.',
       )}</div>`;
       return;
     }
@@ -355,77 +352,24 @@ export class Workspace {
       return;
     }
 
-    const card = document.createElement('div');
-    card.className = 'pe-card';
-
-    const left = document.createElement('div');
-    left.className = 'pe-card-left';
-    const img = document.createElement('img');
-    img.className = 'pe-preview-img';
-    img.alt = `page ${page.pageNo} preview`;
-    const previewWrap = document.createElement('div');
-    previewWrap.className = 'pe-preview-wrap';
-    previewWrap.innerHTML = '<span class="pe-spin"></span>';
-    left.appendChild(previewWrap);
-
-    const right = document.createElement('div');
-    right.className = 'pe-result-right';
-
-    const head = document.createElement('div');
-    head.className = 'pe-viewer-head';
-    head.textContent = `${doc.name} · page ${page.pageNo}`;
-
-    const toolbar = document.createElement('div');
-    toolbar.className = 'pe-toolbar';
-    const out = document.createElement('div');
-    out.className = 'pe-rendered pe-output';
-    out.innerHTML = '<span class="pe-spin"></span>';
-
-    const copyBtn = button('Copy Markdown', 'pe-btn', () => {});
-    const dlPage = button('Download page', 'pe-btn', () => {});
-    toolbar.append(copyBtn, dlPage);
-
-    right.append(head, toolbar, out);
-    card.append(left, right);
-    v.replaceChildren(card);
-
-    // Load the result + preview asynchronously so selection feels instant.
-    const token = (this.selectedPageId = page.id);
-    void getResult(page.id).then((res) => {
-      if (this.selectedPageId !== token) return;
-      const md = res?.markdown ?? '';
-      out.innerHTML = mdToHtml(md);
-      copyBtn.onclick = () => this.copyText(copyBtn, md);
-      dlPage.onclick = () =>
-        triggerDownload(new Blob([md], { type: 'text/markdown' }), `${markdownName(doc).replace(/\.md$/, '')}.p${page.pageNo}.md`);
-      if (res) log.debug('view result', { pageId: page.id, totalMs: res.totalMs, note: res.note });
-    });
-    void pageImageBlob(doc, page).then(
-      (blob) => {
-        if (this.selectedPageId !== token) return;
-        this.previewUrl = URL.createObjectURL(blob);
-        img.src = this.previewUrl;
-        previewWrap.replaceChildren(img);
-      },
-      () => {
-        if (this.selectedPageId !== token) return;
-        previewWrap.innerHTML = `<div class="pe-viewer-empty">${escapeHtml('Preview unavailable.')}</div>`;
-      },
-    );
-  }
-
-  private copyText(btn: HTMLButtonElement, text: string): void {
-    void navigator.clipboard?.writeText(text).then(() => {
-      const prev = btn.textContent;
-      btn.textContent = 'Copied';
-      setTimeout(() => (btn.textContent = prev), 1500);
+    const surface = new ReviewSurface(doc, page);
+    this.surface = surface;
+    v.replaceChildren(surface.el);
+    void surface.load().catch((e) => {
+      showErrorModal({
+        kind: 'Unknown',
+        userMessage: 'Couldn’t open the review for this page.',
+        technical: e instanceof Error ? (e.stack ?? e.message) : String(e),
+      });
     });
   }
 
-  private revokePreview(): void {
-    if (this.previewUrl) {
-      URL.revokeObjectURL(this.previewUrl);
-      this.previewUrl = null;
+  /** Tear down the current review surface (flushes its pending save, frees the
+   *  page raster URL). Called before opening another page or re-rendering. */
+  private teardownSurface(): void {
+    if (this.surface) {
+      this.surface.destroy();
+      this.surface = null;
     }
   }
 

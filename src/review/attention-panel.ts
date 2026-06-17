@@ -1,0 +1,82 @@
+/**
+ * The attention panel: the prioritized worklist rendered as context cards. Order
+ * comes straight from buildAttention (conflicts → hard-gate numbers → worst-first
+ * blocks/lines → gaps → advisory words). Each card explains the concern in plain
+ * language and offers two actions: Show (pan the overlay + scroll the linked
+ * block) and Dismiss (drop it from the list; recorded so it stays gone).
+ */
+import type { AttentionItem } from './attention.ts';
+import { CATEGORY_LABEL } from './attention.ts';
+import { ALL_CLEAR } from './copy.ts';
+import { escapeHtml } from '../ui/progress.ts';
+
+export interface AttentionPanelHandle {
+  readonly el: HTMLElement;
+  render(items: AttentionItem[]): void;
+}
+
+export interface AttentionPanelOptions {
+  onShow: (item: AttentionItem) => void;
+  onDismiss: (item: AttentionItem) => void;
+}
+
+export function createAttentionPanel(opts: AttentionPanelOptions): AttentionPanelHandle {
+  const el = document.createElement('div');
+  el.className = 'pe-attention';
+
+  const list = document.createElement('div');
+  list.className = 'pe-attention-list';
+  el.appendChild(list);
+
+  const render = (items: AttentionItem[]): void => {
+    if (!items.length) {
+      list.innerHTML = `<div class="pe-attention-clear">${escapeHtml(ALL_CLEAR)}</div>`;
+      return;
+    }
+    list.replaceChildren(...items.map((item) => card(item, opts)));
+  };
+
+  render([]);
+  return { el, render };
+}
+
+function card(item: AttentionItem, opts: AttentionPanelOptions): HTMLElement {
+  const c = document.createElement('div');
+  c.className = `pe-att-card pe-att-${item.category}${item.graded ? '' : ' pe-att-categorical'}`;
+
+  const head = document.createElement('div');
+  head.className = 'pe-att-head';
+  const label = document.createElement('span');
+  label.className = 'pe-att-label';
+  label.textContent = CATEGORY_LABEL[item.category];
+  head.appendChild(label);
+
+  const detail = document.createElement('div');
+  detail.className = 'pe-att-detail';
+  detail.textContent = item.detail;
+
+  const actions = document.createElement('div');
+  actions.className = 'pe-att-actions';
+  actions.append(
+    miniBtn('Show', () => opts.onShow(item)),
+    miniBtn('Dismiss', () => opts.onDismiss(item)),
+  );
+
+  c.append(head, detail, actions);
+  // Clicking the card body (not its buttons) also focuses the region.
+  c.addEventListener('click', (e) => {
+    if (!(e.target instanceof HTMLButtonElement)) opts.onShow(item);
+  });
+  return c;
+}
+
+function miniBtn(label: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'pe-att-btn';
+  b.textContent = label;
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClick();
+  });
+  return b;
+}
