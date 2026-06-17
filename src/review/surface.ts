@@ -12,15 +12,21 @@ import { pageImageBlob } from '../orchestrate/raster.ts';
 import { markdownName, triggerDownload } from '../orchestrate/export.ts';
 import { log } from '../runtime/logger.ts';
 import { escapeHtml } from '../ui/progress.ts';
+import type { QuickClient } from '../workers/client.ts';
+import type { BBox } from '../core/types.ts';
+import type { Block } from '../structure/blocks.ts';
 import { ReviewSession, type ReviewState } from './session.ts';
 import { createOverlay, type OverlayHandle } from './overlay.ts';
 import { createVerdictBanner } from './verdict-banner.ts';
 import { createThreshold, type ThresholdHandle } from './threshold.ts';
 import { createAttentionPanel, type AttentionPanelHandle } from './attention-panel.ts';
 import { createEditor, type EditorHandle } from './markdown-editor.ts';
-import { baseUid } from './corrections.ts';
+import { baseUid, blockToMarkdown } from './corrections.ts';
+import { anchorUidFor, cropRegionToBlob } from './region-draw.ts';
 import type { AttentionItem } from './attention.ts';
 import { SAVED } from './copy.ts';
+
+type DrawState = 'idle' | 'drawing' | 'busy';
 
 export class ReviewSurface {
   readonly el: HTMLElement;
@@ -32,6 +38,7 @@ export class ReviewSurface {
   private threshold: ThresholdHandle | null = null;
   private unsub: (() => void) | null = null;
 
+  private image: HTMLImageElement | null = null;
   private imgUrl: string | null = null;
   private attention: AttentionItem[] = [];
   private stepIdx = 0;
@@ -40,12 +47,14 @@ export class ReviewSurface {
 
   private undoBtn: HTMLButtonElement | null = null;
   private resetBtn: HTMLButtonElement | null = null;
+  private drawBtn: HTMLButtonElement | null = null;
   private savedTag: HTMLElement | null = null;
   private savedTimer: number | null = null;
 
   constructor(
     private readonly doc: DocumentRecord,
     private readonly page: PageRecord,
+    private readonly quick: QuickClient,
   ) {
     this.el = document.createElement('div');
     this.el.className = 'pe-review';
@@ -75,6 +84,7 @@ export class ReviewSurface {
       image = null;
     }
     if (this.destroyed) return;
+    this.image = image;
 
     this.build(session, image);
     this.unsub = session.subscribe((s) => this.apply(s));
@@ -179,7 +189,13 @@ export class ReviewSurface {
     this.savedTag.className = 'pe-saved-tag';
     this.savedTag.textContent = 'Edits save automatically';
 
-    bar.append(copy, download, this.undoBtn, this.resetBtn, this.savedTag);
+    bar.append(copy, download, this.undoBtn, this.resetBtn);
+    // Region draw needs the page image; only offer it when the overlay loaded.
+    if (this.overlay) {
+      this.drawBtn = button('Mark a missed area', 'pe-btn', () => this.startRegionDraw());
+      bar.append(this.drawBtn);
+    }
+    bar.append(this.savedTag);
     return bar;
   }
 
@@ -215,18 +231,87 @@ export class ReviewSurface {
     if (item.blockIndex != null && item.blockIndex >= 0) this.editor?.focusBlock(baseUid(item.blockIndex));
   }
 
+  // ---------- region draw + on-demand OCR ----------
+
+  private startRegionDraw(): void {
+    if (!this.overlay || this.drawBtn?.disabled) return;
+    this.setDrawState('drawing');
+    this.overlay.beginDraw((box) => void this.onRegionDrawn(box));
+  }
+
+  private async onRegionDrawn(box: BBox | null): Promise<void> {
+    if (!box || !this.session || !this.image) {
+      this.setDrawState('idle');
+      return;
+    }
+    this.setDrawState('busy');
+    try {
+      const blob = await cropRegionToBlob(this.image, box);
+      const url = URL.createObjectURL(blob);
+      let blocks: Block[];
+      try {
+        blocks = await this.quick.reocrRegion(url, box.x0, box.y0);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      if (this.destroyed || !this.session) return;
+      if (!blocks.length) {
+        this.flashStatus('No text found in that area.');
+        return;
+      }
+      // Splice the recovered blocks into reading order, chaining each after the
+      // previous so multi-block regions keep their order.
+      let after = anchorUidFor(this.session.state().blocks, box);
+      for (const b of blocks) {
+        const uid = `r${crypto.randomUUID()}`;
+        this.session.addRegion({
+          kind: 'region-add',
+          uid,
+          afterUid: after,
+          blockKind: b.kind,
+          markdown: blockToMarkdown(b),
+          box: b.box,
+        });
+        after = uid;
+      }
+      this.flashStatus(`Added ${blocks.length} block${blocks.length > 1 ? 's' : ''}.`);
+    } catch (e) {
+      log.debug('region OCR failed', e);
+      this.flashStatus('Couldn’t read that area.');
+    } finally {
+      if (!this.destroyed) this.setDrawState('idle');
+    }
+  }
+
+  private setDrawState(state: DrawState): void {
+    if (!this.drawBtn) return;
+    this.drawBtn.classList.toggle('pe-btn-active', state === 'drawing');
+    this.drawBtn.disabled = state !== 'idle';
+    this.drawBtn.textContent =
+      state === 'drawing'
+        ? 'Draw a box — Esc to cancel'
+        : state === 'busy'
+          ? 'Reading the area…'
+          : 'Mark a missed area';
+  }
+
   // ---------- helpers ----------
 
   private flashSaved(): void {
+    this.flashStatus(SAVED);
+  }
+
+  /** Briefly show a status message in the toolbar tag, then restore the hint. */
+  private flashStatus(msg: string): void {
     if (this.destroyed || !this.savedTag) return;
-    this.savedTag.textContent = SAVED;
+    this.savedTag.textContent = msg;
     this.savedTag.classList.add('pe-saved-on');
     if (this.savedTimer != null) clearTimeout(this.savedTimer);
     this.savedTimer = window.setTimeout(() => {
       if (!this.savedTag) return;
       this.savedTag.classList.remove('pe-saved-on');
       this.savedTag.textContent = 'Edits save automatically';
-    }, 1400);
+    }, 1600);
   }
 
   private loadImage(blob: Blob): Promise<HTMLImageElement> {

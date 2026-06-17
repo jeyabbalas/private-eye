@@ -4,6 +4,7 @@
  */
 import type { AppError } from '../runtime/errors.ts';
 import type { AppEp } from '../runtime/run-e.ts';
+import type { Block } from '../structure/blocks.ts';
 import type { FromQuickWorker, PageResult, StageKey, ToQuickWorker } from './protocol.ts';
 
 export interface QuickClientHandlers {
@@ -19,10 +20,16 @@ interface Job {
   onStage?(stage: StageKey, raw: string): void;
 }
 
+interface RegionJob {
+  resolve(blocks: Block[]): void;
+  reject(e: AppError): void;
+}
+
 export class QuickClient {
   private readonly worker: Worker;
   private nextJob = 1;
   private readonly jobs = new Map<number, Job>();
+  private readonly regionJobs = new Map<number, RegionJob>();
   private readonly handlers: QuickClientHandlers;
   warmed = false;
 
@@ -46,9 +53,21 @@ export class QuickClient {
     });
   }
 
+  /** OCR a user-drawn region (Phase 4). `imageUrl` is a page-crop object URL;
+   *  the origin offsets the worker's result back into page coordinates. Resolves
+   *  with the assembled blocks (page coords), or [] when no text was found. */
+  reocrRegion(imageUrl: string, originX: number, originY: number): Promise<Block[]> {
+    const jobId = this.nextJob++;
+    return new Promise<Block[]>((resolve, reject) => {
+      this.regionJobs.set(jobId, { resolve, reject });
+      this.send({ type: 'reocr-region', jobId, imageUrl, originX, originY });
+    });
+  }
+
   terminate(): void {
     this.worker.terminate();
     this.jobs.clear();
+    this.regionJobs.clear();
   }
 
   private send(msg: ToQuickWorker): void {
@@ -73,11 +92,21 @@ export class QuickClient {
         job?.resolve(msg.result);
         break;
       }
+      case 'region-result': {
+        const job = this.regionJobs.get(msg.jobId);
+        this.regionJobs.delete(msg.jobId);
+        job?.resolve(msg.blocks);
+        break;
+      }
       case 'error':
         if (msg.jobId != null) {
           const job = this.jobs.get(msg.jobId);
+          const region = this.regionJobs.get(msg.jobId);
           this.jobs.delete(msg.jobId);
-          job?.reject(msg.error);
+          this.regionJobs.delete(msg.jobId);
+          if (job) job.reject(msg.error);
+          else if (region) region.reject(msg.error);
+          else this.handlers.onError?.(msg.error);
         } else {
           this.handlers.onError?.(msg.error);
         }

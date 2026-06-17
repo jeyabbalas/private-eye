@@ -934,6 +934,30 @@ body {
   background: rgba(179, 38, 30, 0.08);
 }
 
+/* region-draw capture layer + rubber band */
+.pe-overlay-draw {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+  background: rgba(18, 18, 20, 0.04);
+}
+
+.pe-draw-rect {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px dashed var(--ink);
+  background: rgba(18, 18, 20, 0.08);
+  pointer-events: none;
+}
+
+.pe-btn-active,
+.pe-btn-active:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
+
 /* attention panel */
 .pe-attention-list {
   display: flex;

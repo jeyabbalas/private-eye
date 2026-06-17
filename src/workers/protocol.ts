@@ -31,7 +31,11 @@ export interface PageResult {
 export type ToQuickWorker =
   | { type: 'init'; debug: boolean; onnxEp: AppEp }
   | { type: 'warm' }
-  | { type: 'run'; jobId: number; tag: string; imageUrl: string };
+  | { type: 'run'; jobId: number; tag: string; imageUrl: string }
+  /** On-demand OCR of a user-drawn region (Phase 4). `imageUrl` is a crop of the
+   *  page at the region; (originX, originY) is the region's page-pixel origin so
+   *  the worker can offset the result back into page space. */
+  | { type: 'reocr-region'; jobId: number; imageUrl: string; originX: number; originY: number };
 
 // Quick Read worker -> main
 export type FromQuickWorker =
@@ -39,4 +43,6 @@ export type FromQuickWorker =
   | { type: 'load-progress'; loaded: number; total: number }
   | { type: 'stage'; jobId: number; stage: StageKey; raw: string }
   | { type: 'result'; jobId: number; result: PageResult }
+  /** Region OCR result: assembled blocks already in PAGE coordinates. */
+  | { type: 'region-result'; jobId: number; blocks: Block[] }
   | { type: 'error'; jobId: number | null; error: AppError };

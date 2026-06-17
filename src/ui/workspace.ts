@@ -352,7 +352,7 @@ export class Workspace {
       return;
     }
 
-    const surface = new ReviewSurface(doc, page);
+    const surface = new ReviewSurface(doc, page, this.quick);
     this.surface = surface;
     v.replaceChildren(surface.el);
     void surface.load().catch((e) => {

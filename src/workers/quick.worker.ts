@@ -8,7 +8,7 @@
  * can't race a run into a double model-load, and pages process sequentially.
  */
 import { setDebug } from '../runtime/logger.ts';
-import { ensureE, runE, eEpNote, type AppEp } from '../runtime/run-e.ts';
+import { ensureE, runE, reocrRegion, eEpNote, type AppEp } from '../runtime/run-e.ts';
 import { reportError } from '../runtime/errors.ts';
 import type { DocModel } from '../structure/blocks.ts';
 import type { FromQuickWorker, StageKey, ToQuickWorker } from './protocol.ts';
@@ -65,9 +65,16 @@ async function handle(msg: ToQuickWorker): Promise<void> {
         post({ type: 'ready', epNote: eEpNote() });
         break;
       }
+
+      case 'reocr-region': {
+        const { jobId, imageUrl, originX, originY } = msg;
+        const blocks = await reocrRegion(imageUrl, originX, originY);
+        post({ type: 'region-result', jobId, blocks });
+        break;
+      }
     }
   } catch (err) {
-    const jobId = msg.type === 'run' ? msg.jobId : null;
+    const jobId = msg.type === 'run' || msg.type === 'reocr-region' ? msg.jobId : null;
     post({ type: 'error', jobId, error: reportError(err, { context: `quick-worker:${msg.type}`, executionProviders: { onnxEp } }) });
   }
 }

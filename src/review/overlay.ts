@@ -26,6 +26,11 @@ export interface OverlayHandle {
   focus(box: BBox | null): void;
   /** Move/show the lighter hover ring; null hides it. */
   hover(box: BBox | null): void;
+  /** Enter region-draw mode: rubber-band a rectangle and report it in page-pixel
+   *  coordinates (null if cancelled or too small to be intentional). */
+  beginDraw(onBox: (box: BBox | null) => void): void;
+  /** Leave region-draw mode without reporting a box. */
+  cancelDraw(): void;
   destroy(): void;
 }
 
@@ -58,7 +63,14 @@ export function createOverlay(opts: OverlayOptions): OverlayHandle {
   const focusRing = ring('pe-ring-focus');
   hits.append(hoverRing, focusRing);
 
-  el.append(image, canvas, hits);
+  // Region-draw capture layer (inactive until beginDraw).
+  const draw = document.createElement('div');
+  draw.className = 'pe-overlay-draw';
+  draw.style.display = 'none';
+  const drawRect = ring('pe-draw-rect');
+  draw.appendChild(drawRect);
+
+  el.append(image, canvas, hits, draw);
 
   const ctx = canvas.getContext('2d');
   const fill = resolveFills();
@@ -102,11 +114,26 @@ export function createOverlay(opts: OverlayOptions): OverlayHandle {
       ringEl.style.display = 'none';
       return;
     }
+    placePx(ringEl, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+  };
+  const placePx = (ringEl: HTMLElement, x: number, y: number, w: number, h: number): void => {
     ringEl.style.display = 'block';
-    ringEl.style.left = `${(box.x0 / width) * 100}%`;
-    ringEl.style.top = `${(box.y0 / height) * 100}%`;
-    ringEl.style.width = `${((box.x1 - box.x0) / width) * 100}%`;
-    ringEl.style.height = `${((box.y1 - box.y0) / height) * 100}%`;
+    ringEl.style.left = `${(x / width) * 100}%`;
+    ringEl.style.top = `${(y / height) * 100}%`;
+    ringEl.style.width = `${(w / width) * 100}%`;
+    ringEl.style.height = `${(h / height) * 100}%`;
+  };
+
+  // Region-draw state: cleanup for the active drag, if any.
+  let cancelActiveDraw: (() => void) | null = null;
+  const clampX = (v: number): number => Math.min(width, Math.max(0, v));
+  const clampY = (v: number): number => Math.min(height, Math.max(0, v));
+  const toPage = (e: PointerEvent): { x: number; y: number } => {
+    const r = draw.getBoundingClientRect();
+    return {
+      x: clampX(((e.clientX - r.left) / r.width) * width),
+      y: clampY(((e.clientY - r.top) / r.height) * height),
+    };
   };
 
   return {
@@ -123,7 +150,62 @@ export function createOverlay(opts: OverlayOptions): OverlayHandle {
     hover(box) {
       place(hoverRing, box);
     },
+    beginDraw(onBox) {
+      cancelActiveDraw?.();
+      draw.style.display = 'block';
+      let start: { x: number; y: number } | null = null;
+
+      const onDown = (e: PointerEvent): void => {
+        e.preventDefault();
+        start = toPage(e);
+        draw.setPointerCapture(e.pointerId);
+        placePx(drawRect, start.x, start.y, 0, 0);
+      };
+      const onMove = (e: PointerEvent): void => {
+        if (!start) return;
+        const p = toPage(e);
+        placePx(drawRect, Math.min(start.x, p.x), Math.min(start.y, p.y), Math.abs(p.x - start.x), Math.abs(p.y - start.y));
+      };
+      const onUp = (e: PointerEvent): void => {
+        if (!start) return;
+        const p = toPage(e);
+        const box: BBox = {
+          x0: Math.min(start.x, p.x),
+          y0: Math.min(start.y, p.y),
+          x1: Math.max(start.x, p.x),
+          y1: Math.max(start.y, p.y),
+        };
+        finish(box.x1 - box.x0 > 6 && box.y1 - box.y0 > 6 ? box : null);
+      };
+      const onKey = (e: KeyboardEvent): void => {
+        if (e.key === 'Escape') finish(null);
+      };
+      const finish = (box: BBox | null): void => {
+        cleanup();
+        onBox(box);
+      };
+      const cleanup = (): void => {
+        draw.removeEventListener('pointerdown', onDown);
+        draw.removeEventListener('pointermove', onMove);
+        draw.removeEventListener('pointerup', onUp);
+        window.removeEventListener('keydown', onKey);
+        draw.style.display = 'none';
+        drawRect.style.display = 'none';
+        start = null;
+        cancelActiveDraw = null;
+      };
+
+      draw.addEventListener('pointerdown', onDown);
+      draw.addEventListener('pointermove', onMove);
+      draw.addEventListener('pointerup', onUp);
+      window.addEventListener('keydown', onKey);
+      cancelActiveDraw = cleanup;
+    },
+    cancelDraw() {
+      cancelActiveDraw?.();
+    },
     destroy() {
+      cancelActiveDraw?.();
       if (raf) cancelAnimationFrame(raf);
       el.remove();
     },

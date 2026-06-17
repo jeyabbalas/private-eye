@@ -30,7 +30,8 @@ export type CorrectionEvent =
   | {
       kind: 'region-add';
       uid: string;
-      /** Insert after this uid, or at the end when null. */
+      /** Insert immediately after this uid; null prepends at the very start (a
+       *  region drawn above every existing block). */
       afterUid: string | null;
       blockKind: Block['kind'];
       markdown: string;
@@ -102,9 +103,13 @@ export function applyCorrections(baseBlocks: Block[], events: readonly Correctio
         break;
       case 'region-add': {
         const wb: WorkingBlock = { uid: ev.uid, kind: ev.blockKind, box: ev.box, markdown: ev.markdown, added: true };
-        const idx = ev.afterUid ? blocks.findIndex((b) => b.uid === ev.afterUid) : -1;
-        if (idx >= 0) blocks.splice(idx + 1, 0, wb);
-        else blocks.push(wb);
+        if (ev.afterUid === null) {
+          blocks.unshift(wb); // drawn above everything → first
+        } else {
+          const idx = blocks.findIndex((b) => b.uid === ev.afterUid);
+          if (idx >= 0) blocks.splice(idx + 1, 0, wb);
+          else blocks.push(wb); // anchor since removed → append as a safe fallback
+        }
         break;
       }
       case 'dismiss':

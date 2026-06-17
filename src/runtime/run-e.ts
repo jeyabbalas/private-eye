@@ -12,6 +12,9 @@
 import { createBrowserContext } from '../adapters/browser.ts';
 import { createPipeline } from '../pipelines/registry.ts';
 import { SLANET_MODEL_SPEC } from '../engines/slanet/index.ts';
+import { PpocrEngine, PPOCR_DEFAULTS } from '../engines/ppocr/index.ts';
+import { buildDocModelFromRegions, type Region } from '../structure/region-assemble.ts';
+import type { Block } from '../structure/blocks.ts';
 import type { InitStats, PageRun, PipelineAdapter } from '../pipelines/types.ts';
 import { log } from './logger.ts';
 
@@ -22,6 +25,11 @@ let pipe: PipelineAdapter | null = null;
 let initStats: InitStats | null = null;
 let loadedEp: AppEp | null = null;
 let fallbacks: string[] = [];
+/** Dedicated OCR engine for on-demand region re-OCR (Phase 4). The pipeline
+ *  encapsulates its own engine, so region OCR gets its own det+rec sessions —
+ *  but on the SAME resident context (same EP/runtime), and only built the first
+ *  time a user draws a region. Released with the pipeline. */
+let regionEngine: PpocrEngine | null = null;
 
 export const isELoaded = (): boolean => pipe !== null;
 
@@ -77,7 +85,38 @@ export async function runE(imageUrl: string, onStatus: (s: string) => void, ep: 
   return pipe!.runPage({ image, source: imageUrl }, ctx);
 }
 
+/**
+ * On-demand OCR of a single user-drawn region (Phase 4). The caller crops the
+ * page image to the region and passes the crop; we OCR it with the resident
+ * engine, assemble it as one text region, and offset the resulting blocks from
+ * crop-local to page coordinates by the region origin. Pure transcription —
+ * never invents text — and fully on-device. Returns [] when no text is found.
+ */
+export async function reocrRegion(cropUrl: string, originX: number, originY: number): Promise<Block[]> {
+  if (!pipe) throw new Error('Quick Read is not loaded yet');
+  if (!regionEngine) {
+    const eng = new PpocrEngine();
+    await eng.init(ctx, PPOCR_DEFAULTS); // same resident ctx → same EP as the page pipeline
+    regionEngine = eng;
+  }
+  const image = await ctx.decodeImage(cropUrl);
+  const { result: ocr } = await regionEngine.run(image);
+  if (!ocr.lines.length) return [];
+  // One synthetic text region spanning the whole crop; 'text' label routes
+  // through text assembly (no SLANet), exactly what a missed text block needs.
+  const region: Region = { label: 'text', score: 1, box: { x0: 0, y0: 0, x1: image.width, y1: image.height }, orderRank: 0 };
+  const doc = await buildDocModelFromRegions(ocr, [region], { order: 'learned' });
+  return doc.blocks.map((b) => ({
+    ...b,
+    box: { x0: b.box.x0 + originX, y0: b.box.y0 + originY, x1: b.box.x1 + originX, y1: b.box.y1 + originY },
+  }));
+}
+
 export async function disposeE(): Promise<void> {
+  if (regionEngine) {
+    await regionEngine.dispose();
+    regionEngine = null;
+  }
   if (pipe) {
     await pipe.dispose();
     pipe = null;
