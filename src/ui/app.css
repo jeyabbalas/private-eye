@@ -215,6 +215,19 @@ body {
   background: #000;
 }
 
+/* ---------- Keyboard focus (a11y) ----------
+   One visible ring for every keyboard-focused control; mouse/touch focus stays
+   ring-free via :focus-visible. The ring sits 2px off the element so it reads on
+   both light and dark (primary) buttons against the light page; inside the dark
+   header it switches to the light ink. */
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.pe-header :focus-visible {
+  outline-color: var(--header-ink);
+}
+
 /* ---------- Magnifier sweep (loading) ---------- */
 .pe-magnifier {
   width: 30px;
@@ -1090,13 +1103,22 @@ body {
   position: absolute;
   top: 5px;
   right: 6px;
-  display: none;
+  display: flex;
   gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
 }
 
+/* Reveal on hover (mouse) AND on keyboard focus within the block, so Edit / Remove
+   are reachable without a pointer. The buttons stay laid out (position:absolute, so
+   no reflow) and keyboard-focusable while hidden — pointer-events only gates the
+   mouse — so tabbing into the block fires :focus-within and brings them into view. */
 .pe-block:hover .pe-block-tools,
+.pe-block:focus-within .pe-block-tools,
 .pe-block-editing .pe-block-tools {
-  display: flex;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .pe-block-added {

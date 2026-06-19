@@ -17,18 +17,30 @@
  *                   one-time ~130 MB layout fetch). Do NOT use for production.
  */
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensurePatchedWllama } from './patch-wllama.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 const skipModels = process.argv.includes('--skip-models');
 
+// The app only ever requests the 'webgpu' or 'wasm' execution provider
+// (src/adapters/browser.ts), with numThreads=1 and no proxy/JSPI. Under that
+// config ORT loads exactly two builds: the base SIMD+threads WASM (CPU fallback)
+// and the JSEP build (WebGPU). The asyncify (~23 MB) and jspi (~14 MB) variants
+// are never selected, so we don't vendor them — ~37 MB off the deploy artifact.
+// This only narrows what we STAGE; ORT still auto-selects among whatever is
+// present, so if a future EP/config needs another build, widen this allowlist
+// (the files exist in node_modules/onnxruntime-web/dist). Confirm both EP paths
+// still load in a browser (WebGPU + forced-WASM) when changing it.
+const ORT_ALLOWED = /^ort-wasm-simd-threaded(\.jsep)?\.(wasm|mjs)$/;
+
 function stageOrt(): void {
   const src = join(ROOT, 'node_modules/onnxruntime-web/dist');
   const dst = join(ROOT, 'public/ort');
+  rmSync(dst, { recursive: true, force: true }); // prune any previously-staged variants
   mkdirSync(dst, { recursive: true });
-  const files = readdirSync(src).filter((f) => /^ort-.*\.(wasm|mjs)$/.test(f));
+  const files = readdirSync(src).filter((f) => ORT_ALLOWED.test(f));
   for (const f of files) copyFileSync(join(src, f), join(dst, f));
   console.log(`staged ${files.length} onnxruntime-web runtime files -> public/ort/`);
 }

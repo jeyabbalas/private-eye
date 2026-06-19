@@ -26,6 +26,8 @@ export function createThreshold(opts: ThresholdOptions): ThresholdHandle {
 
   const count = document.createElement('div');
   count.className = 'pe-threshold-count';
+  // Announce the changing "N spots flagged" tally to screen readers as the slider moves.
+  count.setAttribute('aria-live', 'polite');
 
   const slider = document.createElement('input');
   slider.type = 'range';

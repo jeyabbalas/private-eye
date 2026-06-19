@@ -29,18 +29,29 @@ export interface ModalHandle {
   close(): void;
 }
 
+let modalSeq = 0;
+
 export function showModal(opts: ModalOptions): ModalHandle {
+  // The control to return focus to once the modal closes (focus management).
+  const previouslyFocused = document.activeElement as HTMLElement | null;
+
   const backdrop = document.createElement('div');
   backdrop.className = 'pe-modal-backdrop';
-  backdrop.setAttribute('role', 'dialog');
-  backdrop.setAttribute('aria-modal', 'true');
 
   const modal = document.createElement('div');
   modal.className = 'pe-modal';
+  // Dialog semantics live on the modal itself (the backdrop is just the dim
+  // layer); tabIndex -1 lets us park focus here when there's nothing else.
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.tabIndex = -1;
   backdrop.appendChild(modal);
 
   const h = document.createElement('h3');
+  const titleId = `pe-modal-title-${modalSeq++}`;
+  h.id = titleId;
   h.textContent = opts.title;
+  modal.setAttribute('aria-labelledby', titleId);
   modal.appendChild(h);
 
   if (typeof opts.body === 'string') {
@@ -87,8 +98,39 @@ export function showModal(opts: ModalOptions): ModalHandle {
   modal.appendChild(actionsEl);
 
   const dismissable = opts.dismissable !== false;
+  const focusables = (): HTMLElement[] =>
+    Array.from(
+      modal.querySelectorAll<HTMLElement>(
+        'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])',
+      ),
+    );
   function onKey(e: KeyboardEvent): void {
-    if (dismissable && e.key === 'Escape') handle.close();
+    if (dismissable && e.key === 'Escape') {
+      handle.close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    // Trap Tab within the modal (wrapping at both ends) so keyboard focus can't
+    // wander to the inert page behind it.
+    const f = focusables();
+    if (!f.length) {
+      e.preventDefault();
+      modal.focus();
+      return;
+    }
+    const first = f[0]!;
+    const last = f[f.length - 1]!;
+    const active = document.activeElement;
+    if (!modal.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    } else if (e.shiftKey && active === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
   if (dismissable) {
     backdrop.addEventListener('click', (e) => {
@@ -101,10 +143,14 @@ export function showModal(opts: ModalOptions): ModalHandle {
     close() {
       document.removeEventListener('keydown', onKey);
       backdrop.remove();
+      previouslyFocused?.focus?.();
     },
   };
 
   document.body.appendChild(backdrop);
+  // Move focus into the dialog (primary action first) so keyboard / screen-reader
+  // users land inside it rather than on the now-inert page.
+  ((modal.querySelector('.pe-btn-primary') as HTMLElement | null) ?? focusables()[0] ?? modal).focus();
   return handle;
 }
 

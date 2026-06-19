@@ -67,8 +67,8 @@ function card(item: AttentionItem, opts: AttentionPanelOptions): HTMLElement {
     actions.append(miniBtn(`Use the AI’s “${truncate(item.conflict.vlmReading)}”`, () => opts.onUseAiReading!(item), true));
   }
   actions.append(
-    miniBtn('Show', () => opts.onShow(item)),
-    miniBtn('Dismiss', () => opts.onDismiss(item)),
+    miniBtn('Show', () => opts.onShow(item), false, `Show — ${CATEGORY_LABEL[item.category]}`),
+    miniBtn('Dismiss', () => opts.onDismiss(item), false, `Dismiss — ${CATEGORY_LABEL[item.category]}`),
   );
 
   c.append(head, detail, actions);
@@ -79,10 +79,11 @@ function card(item: AttentionItem, opts: AttentionPanelOptions): HTMLElement {
   return c;
 }
 
-function miniBtn(label: string, onClick: () => void, primary = false): HTMLButtonElement {
+function miniBtn(label: string, onClick: () => void, primary = false, ariaLabel?: string): HTMLButtonElement {
   const b = document.createElement('button');
   b.className = 'pe-att-btn' + (primary ? ' pe-att-btn-primary' : '');
   b.textContent = label;
+  if (ariaLabel) b.setAttribute('aria-label', ariaLabel);
   b.addEventListener('click', (e) => {
     e.stopPropagation();
     onClick();
