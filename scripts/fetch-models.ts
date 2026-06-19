@@ -54,26 +54,6 @@ const GROUPS: ModelGroup[] = [
       { url: hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.yml'), dest: 'ppocr/rec-medium/inference.yml' },
     ],
   },
-  // Legacy PP-OCRv5 (mobile det + English rec) — kept only for the verification
-  // harness A/B (scripts/ocr-harness.ts --compare). Remove once v6 is confirmed.
-  {
-    id: 'ppocr-det-mobile',
-    license: 'Apache-2.0',
-    source: 'https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx',
-    files: [
-      { url: hf('PaddlePaddle/PP-OCRv5_mobile_det_onnx', 'inference.onnx'), dest: 'ppocr/det-mobile/inference.onnx' },
-      { url: hf('PaddlePaddle/PP-OCRv5_mobile_det_onnx', 'inference.yml'), dest: 'ppocr/det-mobile/inference.yml' },
-    ],
-  },
-  {
-    id: 'ppocr-rec-en-mobile',
-    license: 'Apache-2.0',
-    source: 'https://huggingface.co/PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx',
-    files: [
-      { url: hf('PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx', 'inference.onnx'), dest: 'ppocr/rec-en-mobile/inference.onnx' },
-      { url: hf('PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx', 'inference.yml'), dest: 'ppocr/rec-en-mobile/inference.yml' },
-    ],
-  },
   {
     id: 'slanet-plus',
     license: 'Apache-2.0',

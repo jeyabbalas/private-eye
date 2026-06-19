@@ -25,7 +25,7 @@ to `huggingface.co`.
 
 | | **Quick Read** | **Deep Read** (opt-in) |
 |---|---|---|
-| Engine | Deterministic OCR pipeline (PP-DocLayoutV3 → PP-OCRv5 → SLANet) | GLM-OCR vision–language model (via [wllama](https://github.com/ngxson/wllama)) |
+| Engine | Deterministic OCR pipeline (PP-DocLayoutV3 → PP-OCRv6 → SLANet) | GLM-OCR vision–language model (via [wllama](https://github.com/ngxson/wllama)) |
 | Best for | Clean scans; an exact, faithful transcription | Messy layouts and complex structure |
 | Download | ~tens of MB, browser-cached | ~1.4 GB of weights, cached on-device (OPFS) |
 | Runs | Off the main thread, in a Web Worker | wllama's own worker pool (WebGPU when available) |
@@ -94,7 +94,7 @@ Deep Read runs GLM-OCR through wllama (llama.cpp compiled to WebAssembly). Model
 from public Hugging Face repositories:
 
 - Layout — `PP-DocLayoutV3` (ONNX)
-- Text detection + recognition — `PP-OCRv5` (ONNX)
+- Text detection + recognition — `PP-OCRv6` (ONNX)
 - Table structure — `SLANet` (ONNX)
 - Deep Read — `GLM-OCR` (GGUF)
 

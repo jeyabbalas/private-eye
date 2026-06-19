@@ -23,10 +23,6 @@ export type PpocrTier = 'tiny' | 'small' | 'medium';
 
 export interface PpocrOptions {
   tier: PpocrTier;
-  /** Advanced/eval override: explicit det+rec model + yml paths, bypassing the
-   *  tier-derived defaults. The app never sets this; the verification harness uses
-   *  it to A/B alternate model sets (e.g. legacy PP-OCRv5). */
-  modelPaths?: PpocrModelPaths;
   detLimit: number; // long-side target for detection input (yml default 960)
   dropScore: number; // drop lines with rec confidence below this (PaddleOCR system default 0.5)
   recBatch: number;
@@ -72,9 +68,7 @@ export interface PpocrModelPaths {
   detYml: string;
   recYml: string;
 }
-/** The tier-matched det+rec model + yml paths (the production default). The eval
- *  harness passes an explicit override (PpocrOptions.modelPaths) to A/B other model
- *  sets, e.g. legacy PP-OCRv5 (det-mobile + en rec). */
+/** The tier-matched det+rec model + yml paths. */
 export function tierModelPaths(tier: PpocrTier): PpocrModelPaths {
   return { det: detModelSpec(tier), rec: recModelSpec(tier), detYml: detYmlPath(tier), recYml: recYmlPath(tier) };
 }
@@ -90,7 +84,7 @@ export class PpocrEngine {
 
   async init(ctx: RuntimeContext, opts: Partial<PpocrOptions> = {}): Promise<void> {
     this.opts = { ...PPOCR_DEFAULTS, ...opts };
-    const paths = this.opts.modelPaths ?? tierModelPaths(this.opts.tier);
+    const paths = tierModelPaths(this.opts.tier);
     const [det, rec, recYmlBytes, detYmlBytes] = await Promise.all([
       ctx.createSession(paths.det),
       ctx.createSession(paths.rec),
@@ -105,16 +99,16 @@ export class PpocrEngine {
     // PP-OCR document recognizers use it) and reconcile against the model's true
     // output dim C on the first batch (reconcileCharset), so a wrong yml hint can
     // never shift glyph indices. v6 rec is a unified multilingual model: the dict
-    // is ~18.7k entries (medium/small) vs v5-en's 436 — but it loads the same way.
+    // is ~18.7k entries (medium/small) — but it loads the same way.
     const recYml = load(new TextDecoder().decode(recYmlBytes)) as {
       PostProcess: { character_dict: string[]; use_space_char?: boolean };
     };
     this.dict = recYml.PostProcess.character_dict;
     this.charset = buildCharset(this.dict, recYml.PostProcess.use_space_char ?? true);
 
-    // DB postprocess thresholds differ across versions (v6 det: 0.2 / 0.45 / 1.4
-    // vs v5: 0.3 / 0.6 / 1.5). Read them from the det yml so detection tracks the
-    // loaded model; fall back to DB_DEFAULTS per field (minSize isn't in the yml).
+    // DB postprocess thresholds vary by model (v6 det yml: 0.2 / 0.45 / 1.4). Read
+    // them from the det yml so detection tracks the loaded model; fall back to
+    // DB_DEFAULTS per field (minSize isn't in the yml).
     const detYml = load(new TextDecoder().decode(detYmlBytes)) as {
       PostProcess?: { thresh?: number; box_thresh?: number; unclip_ratio?: number; max_candidates?: number };
     };

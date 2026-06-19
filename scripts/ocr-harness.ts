@@ -1,8 +1,8 @@
 /**
  * Headless OCR verification harness. Runs the PP-OCR engine (det+rec only) over
  * the pathology-report fixtures and scores how much of the ground truth the raw
- * OCR recovers — the right question for "is v6's det+rec at least as good as v5's
- * at seeing the content." Runs on the Node adapter (src/adapters/node.ts), so it
+ * OCR recovers — the right question for "does the det+rec stage see all the
+ * content." Runs on the Node adapter (src/adapters/node.ts), so it
  * exercises the exact engine both pipelines share.
  *
  * SCOPE: this runs flat OCR (a list of lines), NOT the full pipeline — so it
@@ -14,12 +14,12 @@
  * models/). Usage:
  *   npm run ocr:harness                              # default v6-medium
  *   npm run ocr:harness -- --tier small              # a single v6 tier
- *   npm run ocr:harness -- --compare v5-mobile,v6-medium   # side-by-side delta
+ *   npm run ocr:harness -- --compare v6-small,v6-medium    # side-by-side delta
  */
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createNodeContext } from '../src/adapters/node.ts';
-import { PpocrEngine, type PpocrModelPaths, type PpocrTier } from '../src/engines/ppocr/index.ts';
+import { PpocrEngine, type PpocrTier } from '../src/engines/ppocr/index.ts';
 import { docToText, parseDoc } from '../src/eval/mdast.ts';
 import { extractNumbers, extractWords, normalizeField } from '../src/eval/normalize.ts';
 import { tokensMissingFromPool, withinEdit1 } from '../src/eval/token-match.ts';
@@ -40,23 +40,11 @@ const fixturesDir = arg('--fixtures', join(REPO_ROOT, 'test/fixtures/pathology_r
 const gtDir = arg('--gt', join(REPO_ROOT, 'test/fixtures/ground_truth'));
 const limit = Number(arg('--limit', '0')) || 0;
 
-/** Map a variant name to engine options. v6 tiers derive their paths from the
- *  tier; v5-mobile overrides with the legacy det-mobile + en-rec paths. */
-function variantOpts(name: string): { tier: PpocrTier; modelPaths?: PpocrModelPaths } {
-  if (name === 'v5-mobile') {
-    return {
-      tier: 'medium', // unused when modelPaths is set
-      modelPaths: {
-        det: { id: 'ppocr-det-mobile', url: 'ppocr/det-mobile/inference.onnx' },
-        rec: { id: 'ppocr-rec-en-mobile', url: 'ppocr/rec-en-mobile/inference.onnx' },
-        detYml: 'ppocr/det-mobile/inference.yml',
-        recYml: 'ppocr/rec-en-mobile/inference.yml',
-      },
-    };
-  }
+/** Map a variant name to engine options (v6 tier → tier-derived model paths). */
+function variantOpts(name: string): { tier: PpocrTier } {
   const m = /^v6-(tiny|small|medium)$/.exec(name);
   if (m) return { tier: m[1] as PpocrTier };
-  throw new Error(`unknown variant "${name}" (expected v6-tiny | v6-small | v6-medium | v5-mobile)`);
+  throw new Error(`unknown variant "${name}" (expected v6-tiny | v6-small | v6-medium)`);
 }
 
 const FIELD_KINDS = ['date', 'id', 'name', 'text'] as const;

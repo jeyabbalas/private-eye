@@ -37,12 +37,6 @@ const MODEL_CDN: Record<string, string> = {
   'ppocr/det-medium/inference.yml': hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.yml'),
   'ppocr/rec-medium/inference.onnx': hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.onnx'),
   'ppocr/rec-medium/inference.yml': hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.yml'),
-  // PP-OCRv5 detector + recognizer (English) — legacy, kept only so the verification
-  // harness can A/B v5↔v6 (scripts/ocr-harness.ts --compare). Remove once v6 is confirmed.
-  'ppocr/det-mobile/inference.onnx': hf('PaddlePaddle/PP-OCRv5_mobile_det_onnx', 'inference.onnx'),
-  'ppocr/det-mobile/inference.yml': hf('PaddlePaddle/PP-OCRv5_mobile_det_onnx', 'inference.yml'),
-  'ppocr/rec-en-mobile/inference.onnx': hf('PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx', 'inference.onnx'),
-  'ppocr/rec-en-mobile/inference.yml': hf('PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx', 'inference.yml'),
   // SLANet table structure.
   'slanet/inference.onnx': hf('PaddlePaddle/SLANet_plus_onnx', 'inference.onnx'),
   'slanet/inference.yml': hf('PaddlePaddle/SLANet_plus_onnx', 'inference.yml'),
