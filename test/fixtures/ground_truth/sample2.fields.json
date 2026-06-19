@@ -1,0 +1,10 @@
+{
+  "fields": [
+    { "name": "patient_name", "value": "Sarah L. Whitman", "normalize": "name", "page": 1 },
+    { "name": "date_of_birth", "value": "12 September 1985", "normalize": "date", "page": 1 },
+    { "name": "report_no", "value": "HV45023947", "normalize": "id", "page": 1 },
+    { "name": "medical_record_no", "value": "738493920", "normalize": "id", "page": 1 },
+    { "name": "specimen_type", "value": "Liver biopsy", "normalize": "text", "page": 1 },
+    { "name": "report_date", "value": "18 October 2023", "normalize": "date", "page": 1 }
+  ]
+}

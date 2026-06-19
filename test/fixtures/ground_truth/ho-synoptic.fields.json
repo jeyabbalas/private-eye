@@ -1,0 +1,28 @@
+{
+  "fields": [
+    {
+      "name": "patient_name",
+      "value": "BEAUMONT, CLAUDETTE",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "case_no",
+      "value": "LCC-25-44871",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "dob",
+      "value": "30 SEP 1959",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "procedure_date",
+      "value": "12 JAN 2025",
+      "normalize": "date",
+      "page": 1
+    }
+  ]
+}

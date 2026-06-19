@@ -1,0 +1,10 @@
+{
+  "fields": [
+    { "name": "surname", "value": "HARGREAVES", "normalize": "name", "page": 1 },
+    { "name": "forename", "value": "Margaret", "normalize": "name", "page": 1 },
+    { "name": "report_no", "value": "RH-2024-04817", "normalize": "id", "page": 1 },
+    { "name": "date_of_birth", "value": "23 MAR 1957", "normalize": "date", "page": 1 },
+    { "name": "nhs_no", "value": "617 884 2290", "normalize": "id", "page": 1 },
+    { "name": "reported_date", "value": "07 Mar 2024", "normalize": "date", "page": 1 }
+  ]
+}

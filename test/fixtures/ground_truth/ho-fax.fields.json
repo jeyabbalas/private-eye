@@ -1,0 +1,40 @@
+{
+  "fields": [
+    {
+      "name": "patient_name",
+      "value": "DELACROIX, MARCEL",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "accession",
+      "value": "CY-25-1180",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "dob",
+      "value": "19 NOV 1949",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "collected_date",
+      "value": "17 FEB 2025",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "specimen",
+      "value": "Pleural fluid",
+      "normalize": "text",
+      "page": 1
+    },
+    {
+      "name": "physician",
+      "value": "Dr. R. Ibrahim",
+      "normalize": "name",
+      "page": 1
+    }
+  ]
+}

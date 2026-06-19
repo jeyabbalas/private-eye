@@ -1,0 +1,40 @@
+{
+  "fields": [
+    {
+      "name": "patient_name",
+      "value": "FAIRWEATHER, GLORIA",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "report_no",
+      "value": "PRL-25-77310",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "dob",
+      "value": "02 DEC 1962",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "collected_date",
+      "value": "05 MAR 2025",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "physician",
+      "value": "Dr. T. Vasquez",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "received_date",
+      "value": "07 MAR 2025",
+      "normalize": "date",
+      "page": 1
+    }
+  ]
+}

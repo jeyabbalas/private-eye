@@ -1,0 +1,34 @@
+{
+  "fields": [
+    {
+      "name": "patient_name",
+      "value": "OKONKWO, IFEOMA",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "lab_no",
+      "value": "NG-IHC-30562",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "dob",
+      "value": "07 JUL 1971",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "block",
+      "value": "A3",
+      "normalize": "text",
+      "page": 1
+    },
+    {
+      "name": "test_date",
+      "value": "22 FEB 2025",
+      "normalize": "date",
+      "page": 1
+    }
+  ]
+}

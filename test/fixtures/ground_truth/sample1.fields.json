@@ -1,0 +1,10 @@
+{
+  "fields": [
+    { "name": "surname", "value": "DOE", "normalize": "name", "page": 1 },
+    { "name": "forename", "value": "John", "normalize": "name", "page": 1 },
+    { "name": "report_no", "value": "LM237329", "normalize": "id", "page": 1 },
+    { "name": "date_of_birth", "value": "08 JUN 1942", "normalize": "date", "page": 1 },
+    { "name": "hospital_no", "value": "434 257 1829", "normalize": "id", "page": 1 },
+    { "name": "authorised_date", "value": "18 Feb 2018", "normalize": "date", "page": 2 }
+  ]
+}

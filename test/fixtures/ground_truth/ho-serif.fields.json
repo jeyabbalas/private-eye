@@ -1,0 +1,40 @@
+{
+  "fields": [
+    {
+      "name": "patient_name",
+      "value": "WHITLOCK, EDITH",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "hospital_no",
+      "value": "SA-118822",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "dob",
+      "value": "24 APR 1944",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "specimen",
+      "value": "Colon, right hemicolectomy",
+      "normalize": "text",
+      "page": 1
+    },
+    {
+      "name": "received_date",
+      "value": "09 JAN 2025",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "consultant",
+      "value": "Dr. M. Farrukh",
+      "normalize": "name",
+      "page": 1
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "fields": [
+    {
+      "name": "patient_name",
+      "value": "ALVAREZ, RAMON",
+      "normalize": "name",
+      "page": 1
+    },
+    {
+      "name": "mrn",
+      "value": "MR-7781-2240",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "dob",
+      "value": "11 FEB 1968",
+      "normalize": "date",
+      "page": 1
+    },
+    {
+      "name": "accession",
+      "value": "S24-009912",
+      "normalize": "id",
+      "page": 1
+    },
+    {
+      "name": "sex",
+      "value": "Male",
+      "normalize": "text",
+      "page": 1
+    },
+    {
+      "name": "collected_date",
+      "value": "03 APR 2024",
+      "normalize": "date",
+      "page": 1
+    }
+  ]
+}
