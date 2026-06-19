@@ -41,6 +41,9 @@ export interface OverlayOptions {
   height: number;
   layer: UncertaintyLayer | undefined;
   tau: number;
+  /** Hover a block's region on the scan ↔ report its block index (null on leave),
+   *  so the Markdown pane can light the matching block (scan → Markdown linking). */
+  onHoverRegion?: (blockIndex: number | null) => void;
 }
 
 export function createOverlay(opts: OverlayOptions): OverlayHandle {
@@ -124,6 +127,44 @@ export function createOverlay(opts: OverlayOptions): OverlayHandle {
     ringEl.style.height = `${(h / height) * 100}%`;
   };
 
+  // Scan → Markdown hover linking: report the smallest block region under the
+  // pointer. Ratio-based against the live rect, so it's transparent to zoom/pan.
+  if (opts.onHoverRegion && layer) {
+    const report = opts.onHoverRegion;
+    let lastHit: number | null = null;
+    const hitBlock = (clientX: number, clientY: number): number | null => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return null;
+      const x = ((clientX - r.left) / r.width) * width;
+      const y = ((clientY - r.top) / r.height) * height;
+      let best: number | null = null;
+      let bestArea = Infinity;
+      for (const b of layer.blocks) {
+        if (x < b.box.x0 || x > b.box.x1 || y < b.box.y0 || y > b.box.y1) continue;
+        const area = (b.box.x1 - b.box.x0) * (b.box.y1 - b.box.y0);
+        if (area < bestArea) {
+          bestArea = area;
+          best = b.blockIndex;
+        }
+      }
+      return best;
+    };
+    el.addEventListener('pointermove', (e) => {
+      if (draw.style.display !== 'none') return; // mid region-draw → not a hover
+      const hit = hitBlock(e.clientX, e.clientY);
+      if (hit !== lastHit) {
+        lastHit = hit;
+        report(hit);
+      }
+    });
+    el.addEventListener('pointerleave', () => {
+      if (lastHit !== null) {
+        lastHit = null;
+        report(null);
+      }
+    });
+  }
+
   // Region-draw state: cleanup for the active drag, if any.
   let cancelActiveDraw: (() => void) | null = null;
   const clampX = (v: number): number => Math.min(width, Math.max(0, v));
@@ -144,8 +185,8 @@ export function createOverlay(opts: OverlayOptions): OverlayHandle {
       if (!raf) raf = requestAnimationFrame(paint);
     },
     focus(box) {
+      // The scan-view controller zooms the box into view; we just place the ring.
       place(focusRing, box);
-      if (box) focusRing.scrollIntoView({ behavior: 'smooth', block: 'center' });
     },
     hover(box) {
       place(hoverRing, box);

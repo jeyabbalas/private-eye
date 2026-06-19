@@ -44,6 +44,10 @@ export interface AttentionItem {
   detail: string;
   /** Always shown (categorical) vs τ-filtered (graded). */
   graded: boolean;
+  /** The exact token this item is about, when there is one (a number/word), so the
+   *  Markdown pane can highlight that substring inline. Absent for region-level
+   *  items (low-confidence blocks/lines, coverage gaps). */
+  token?: string;
   /** For cross-model conflicts: the two candidate readings, so the reviewer can
    *  one-click accept the scan reading over the AI one (when the scan has one). */
   conflict?: { ocrReading: string | null; vlmReading: string };
@@ -119,6 +123,7 @@ export function buildAttention(
           ? `We used the scan’s “${r.ocrReading}” (the AI read “${r.vlmReading}”).`
           : `The AI read “${r.vlmReading}”, but the scan didn’t confirm it.`,
       graded: false,
+      token: r.ocrReading ?? r.vlmReading,
       conflict: { ocrReading: r.ocrReading, vlmReading: r.vlmReading },
     });
   });
@@ -138,6 +143,7 @@ export function buildAttention(
         title: CATEGORY_LABEL['unverified-number'],
         detail: `“${f.token}” appears in the result but wasn’t found in the scan.`,
         graded: false,
+        token: f.token,
       });
     });
     verification.omission.numbers.forEach((f, i) => {
@@ -152,6 +158,7 @@ export function buildAttention(
         title: CATEGORY_LABEL['omitted-number'],
         detail: `“${f.token}” is in the scan but may be missing from the result.`,
         graded: false,
+        token: f.token,
       });
     });
   }
@@ -218,6 +225,7 @@ export function buildAttention(
       title: CATEGORY_LABEL['advisory-word'],
       detail: r.ocrReading != null ? `Scan “${r.ocrReading}” vs AI “${r.vlmReading}”.` : `AI read “${r.vlmReading}”.`,
       graded: true,
+      token: r.ocrReading ?? r.vlmReading,
       conflict: { ocrReading: r.ocrReading, vlmReading: r.vlmReading },
     });
   });

@@ -1,11 +1,14 @@
 /**
- * The workspace: a multi-file document manager. Users add images and PDFs; pages
- * are persisted, processed one at a time by the queue (models stay resident), and
- * survive reloads. Processed pages can be viewed and the whole batch downloaded
- * as Markdown.
+ * The workspace: a multi-file document manager and the app's working surface.
+ * Users add images and PDFs; pages are persisted and processed one at a time by
+ * the queue (models stay resident), survive reloads, and show up as tiles in a
+ * thin horizontal carousel. Selecting a finished tile opens it in the review
+ * surface — a zoomable scan beside the structured Markdown.
  *
- * This is Phase 2's surface — the viewer is read-only Markdown for now; the full
- * review/correction tooling (overlay, threshold, editing) arrives in Phase 3.
+ * Reading depth is deliberately simple: Quick Read runs automatically on every
+ * page; Deep Read is a per-page escalation offered from the review surface. There
+ * is no global mode toggle, so the two never conflict — and the status line always
+ * names which one is running right now.
  */
 import { QuickClient } from '../workers/client.ts';
 import { DeepClient } from '../workers/deep-client.ts';
@@ -24,6 +27,7 @@ import {
   markdownName,
   triggerDownload,
 } from '../orchestrate/export.ts';
+import { pageImageBlob } from '../orchestrate/raster.ts';
 import {
   PROCESSED,
   TERMINAL,
@@ -36,10 +40,11 @@ import { ReviewSurface } from '../review/surface.ts';
 import { showErrorModal, showModal } from './modal.ts';
 import { confirmDeepRead, DeepDeclined } from './deep-consent.ts';
 import { escapeHtml, fmtBytes } from './progress.ts';
+import { makeThumbUrl } from './thumbs.ts';
 import { CASE_CLOSED, deepPhaseMessage, SPECIALIST, stageMessage, WARMING } from './copy.ts';
 import type { DeepPhaseKind, StageKey } from '../workers/protocol.ts';
 import type { Capabilities } from '../runtime/capabilities.ts';
-import { isDebug } from '../runtime/logger.ts';
+import { isDebug, log } from '../runtime/logger.ts';
 import { reportError } from '../runtime/errors.ts';
 
 const ACCEPT = 'image/*,application/pdf,.pdf';
@@ -51,31 +56,41 @@ export class Workspace {
   private docs: DocumentRecord[] = [];
   private readonly pagesByDoc = new Map<string, PageRecord[]>();
   private readonly pageMap = new Map<PageId, PageRecord>();
-  private readonly chipEls = new Map<PageId, HTMLButtonElement>();
+  private readonly tileEls = new Map<PageId, HTMLButtonElement>();
   private readonly rollupEls = new Map<string, HTMLElement>();
 
   private selectedPageId: PageId | null = null;
   private surface: ReviewSurface | null = null;
   private ready = false;
 
-  // status bar
-  private statusMain: HTMLElement | null = null;
-  private statusSub: HTMLElement | null = null;
-  private statusBar: HTMLElement | null = null;
-  private statusFill: HTMLElement | null = null;
+  // app bar / status line
+  private runLight: HTMLElement | null = null;
+  private runMode: HTMLElement | null = null;
+  private runText: HTMLElement | null = null;
+  private runSub: HTMLElement | null = null;
+  private progressBar: HTMLElement | null = null;
+  private progressFill: HTMLElement | null = null;
+  private addBtn: HTMLButtonElement | null = null;
   private downloadAllBtn: HTMLButtonElement | null = null;
   private stopBtn: HTMLButtonElement | null = null;
+  private deepChip: HTMLButtonElement | null = null;
 
-  // Deep Read (opt-in)
-  private mode: ReadMode = 'quick';
+  // carousel + review host
+  private carouselEl: HTMLElement | null = null;
+  private reviewHost: HTMLElement | null = null;
+
+  // thumbnails (lazy, cached, revoked on doc removal)
+  private readonly thumbUrls = new Map<PageId, string>();
+  private readonly thumbPending = new Set<PageId>();
+  private thumbObserver: IntersectionObserver | null = null;
+
+  // Deep Read (opt-in, per-page)
   private deep: DeepClient | null = null;
   private deepState: 'off' | 'loading' | 'ready' = 'off';
-  /** Memoized consent + load, so the toggle and the queue share one gate. */
+  /** Memoized consent + load, so every per-page escalation shares one gate. */
   private deepReadyPromise: Promise<DeepClient> | null = null;
   private deepLoaded = 0;
   private deepTotal = 0;
-  private readonly modeEls = new Map<ReadMode, HTMLButtonElement>();
-  private unloadBtn: HTMLButtonElement | null = null;
 
   // busy-state animation
   private currentPageId: PageId | null = null;
@@ -207,14 +222,15 @@ export class Workspace {
 
     if (newPageIds.length) {
       this.errorShownThisBatch = false;
-      this.queue.enqueue(newPageIds, this.mode);
+      // Everything is read with Quick Read automatically; Deep is a per-page opt-in.
+      this.queue.enqueue(newPageIds);
     }
   }
 
-  // ---------- Deep Read lifecycle ----------
+  // ---------- Deep Read lifecycle (per-page escalation) ----------
 
   /** Resolve a ready Deep Read worker — the consent + ~1.4 GB load gate, memoized
-   *  so the mode toggle, the per-page re-read, and the queue all share one load. */
+   *  so the per-page re-read and the queue share one load. */
   private ensureDeepReady(): Promise<DeepClient> {
     if (this.deep && this.deepState === 'ready') return Promise.resolve(this.deep);
     if (this.deepReadyPromise) return this.deepReadyPromise;
@@ -243,7 +259,7 @@ export class Workspace {
     this.deepState = 'loading';
     this.deepLoaded = 0;
     this.deepTotal = 0;
-    this.updateModeUI();
+    this.updateDeepChip();
     this.updateStatusBar();
     try {
       await this.deep.load({
@@ -254,40 +270,19 @@ export class Workspace {
         },
       });
     } catch (e) {
-      // The load may have left the worker dead (a fatal error surfaced via
-      // worker.onerror terminates it). Discard the client so the next attempt
-      // constructs a fresh worker instead of reusing a dead one (which would hang).
+      // The load may have left the worker dead; discard it so the next attempt
+      // constructs a fresh one instead of reusing a dead one (which would hang).
       this.deep?.terminate();
       this.deep = null;
       this.deepState = 'off';
-      this.updateModeUI();
+      this.updateDeepChip();
       this.updateStatusBar();
       throw e;
     }
     this.deepState = 'ready';
-    this.updateModeUI();
+    this.updateDeepChip();
     this.updateStatusBar();
     return this.deep;
-  }
-
-  /** Switch reading depth. Picking Deep runs the load gate first; declining or a
-   *  load failure leaves the app on Quick Read. */
-  private async onSelectMode(mode: ReadMode): Promise<void> {
-    if (mode === this.mode && this.deepState !== 'off') return;
-    if (mode === 'deep') {
-      try {
-        await this.ensureDeepReady();
-      } catch (e) {
-        if (!(e instanceof DeepDeclined)) {
-          showErrorModal(reportError(e, { context: 'deep:load', capabilities: this.caps }));
-        }
-        this.mode = 'quick';
-        this.updateModeUI();
-        return;
-      }
-    }
-    this.mode = mode;
-    this.updateModeUI();
   }
 
   /** Reclaim the ~1.4 GB Deep Read model by terminating its worker (idle only). */
@@ -297,12 +292,12 @@ export class Workspace {
     this.deep = null;
     this.deepState = 'off';
     this.deepReadyPromise = null;
-    this.mode = 'quick';
-    this.updateModeUI();
+    this.updateDeepChip();
     this.updateStatusBar();
   }
 
-  /** Re-read one already-processed page with Deep Read (the review-surface opt-in). */
+  /** Re-read one already-processed page with Deep Read (the review-surface opt-in).
+   *  This is the only way to invoke Deep Read — a deliberate, per-page escalation. */
   private async readPageDeep(page: PageRecord): Promise<void> {
     try {
       await this.ensureDeepReady();
@@ -320,8 +315,8 @@ export class Workspace {
       const i = arr.findIndex((p) => p.id === page.id);
       if (i >= 0) arr[i] = fresh;
     }
-    const chip = this.chipEls.get(page.id);
-    if (chip) this.applyChip(chip, fresh);
+    const tile = this.tileEls.get(page.id);
+    if (tile) this.applyTile(tile, fresh);
     this.updateRollup(page.docId);
     this.errorShownThisBatch = false;
     this.queue.enqueue([page.id], 'deep');
@@ -342,22 +337,25 @@ export class Workspace {
   // ---------- rendering ----------
 
   private render(): void {
-    this.chipEls.clear();
+    this.tileEls.clear();
     this.rollupEls.clear();
-    this.statusMain = this.statusSub = this.statusBar = this.statusFill = null;
-    this.downloadAllBtn = null;
+    this.thumbObserver?.disconnect();
+    this.thumbObserver = null;
+    this.runLight = this.runMode = this.runText = this.runSub = null;
+    this.progressBar = this.progressFill = null;
+    this.addBtn = this.downloadAllBtn = this.stopBtn = this.deepChip = null;
+    this.carouselEl = this.reviewHost = null;
 
     if (this.docs.length === 0) {
       this.el.replaceChildren(this.buildEmpty());
       return;
     }
 
-    const manager = document.createElement('div');
-    manager.className = 'pe-manager';
-    manager.append(this.buildStatusBar(), this.buildDocList(), this.buildViewer());
-    this.el.replaceChildren(manager);
+    this.el.replaceChildren(this.buildAppBar(), this.buildCarousel(), this.buildReviewHost());
     this.updateStatusBar();
+    this.updateDeepChip();
     this.renderViewer();
+    this.observeVisibleThumbs();
   }
 
   private buildEmpty(): HTMLElement {
@@ -379,102 +377,83 @@ export class Workspace {
     return zone;
   }
 
-  private buildStatusBar(): HTMLElement {
+  /** The thin top bar: a live status line that names the running mode, a slim
+   *  progress bar, and the global actions (Add / Stop / Download all / Unload). */
+  private buildAppBar(): HTMLElement {
     const bar = document.createElement('div');
-    bar.className = 'pe-statusbar';
+    bar.className = 'pe-appbar';
 
     const status = document.createElement('div');
-    status.className = 'pe-status';
-    this.statusMain = document.createElement('div');
-    this.statusMain.className = 'pe-status-main';
-    this.statusSub = document.createElement('div');
-    this.statusSub.className = 'pe-status-sub';
-    status.append(this.statusMain, this.statusSub);
+    status.className = 'pe-run';
+    status.setAttribute('role', 'status');
+    this.runLight = document.createElement('span');
+    this.runLight.className = 'pe-runlight';
+    this.runMode = document.createElement('span');
+    this.runMode.className = 'pe-runmode';
+    this.runText = document.createElement('span');
+    this.runText.className = 'pe-runtext';
+    const line = document.createElement('div');
+    line.className = 'pe-runline';
+    line.append(this.runLight, this.runMode, this.runText);
+    this.runSub = document.createElement('div');
+    this.runSub.className = 'pe-runsub';
+    status.append(line, this.runSub);
 
-    this.statusBar = document.createElement('div');
-    this.statusBar.className = 'pe-progress';
-    const fill = document.createElement('div');
-    fill.className = 'pe-progress-fill';
-    this.statusBar.appendChild(fill);
-    this.statusFill = fill;
+    this.progressBar = document.createElement('div');
+    this.progressBar.className = 'pe-progress';
+    this.progressFill = document.createElement('div');
+    this.progressFill.className = 'pe-progress-fill';
+    this.progressBar.appendChild(this.progressFill);
 
     const actions = document.createElement('div');
-    actions.className = 'pe-statusbar-actions';
-    const add = button('Add files', 'pe-btn', () => this.pickFiles());
+    actions.className = 'pe-appbar-actions';
+    this.deepChip = button('', 'pe-chip-deep', () => this.unloadDeep());
+    this.deepChip.hidden = true;
+    this.addBtn = button('Add files', 'pe-btn', () => this.pickFiles());
     this.stopBtn = button('Stop', 'pe-btn', () => this.queue.cancelAll());
     this.stopBtn.hidden = true;
     this.downloadAllBtn = button('Download all (ZIP)', 'pe-btn pe-btn-primary', () => void this.onDownloadAll());
-    actions.append(this.buildModeToggle(), add, this.stopBtn, this.downloadAllBtn);
+    actions.append(this.deepChip, this.addBtn, this.stopBtn, this.downloadAllBtn);
 
-    bar.append(status, this.statusBar, actions);
+    bar.append(status, this.progressBar, actions);
     return bar;
   }
 
-  /** Reading-depth toggle: Quick (default) vs Deep (opt-in). Picking Deep runs the
-   *  consent + ~1.4 GB load gate; once loaded, an Unload control reclaims it. */
-  private buildModeToggle(): HTMLElement {
-    this.modeEls.clear();
-    const wrap = document.createElement('div');
-    wrap.className = 'pe-mode';
-
-    const seg = document.createElement('div');
-    seg.className = 'pe-mode-seg';
-    seg.setAttribute('role', 'group');
-    seg.setAttribute('aria-label', 'Reading depth');
-    for (const m of ['quick', 'deep'] as ReadMode[]) {
-      const b = document.createElement('button');
-      b.className = 'pe-mode-opt';
-      b.textContent = m === 'quick' ? 'Quick Read' : 'Deep Read';
-      b.addEventListener('click', () => void this.onSelectMode(m));
-      this.modeEls.set(m, b);
-      seg.appendChild(b);
-    }
-
-    this.unloadBtn = button('Unload', 'pe-mode-unload', () => this.unloadDeep());
-    this.unloadBtn.title = 'Free the Deep Read model from memory (~1.4 GB)';
-    wrap.append(seg, this.unloadBtn);
-    this.updateModeUI();
-    return wrap;
+  /** The document carousel: a thin, horizontally-scrollable filmstrip of page
+   *  thumbnails grouped by document. Deliberately bounded in height so the scan +
+   *  Markdown panes below get the page's width. */
+  private buildCarousel(): HTMLElement {
+    const scroller = document.createElement('div');
+    scroller.className = 'pe-carousel';
+    this.carouselEl = scroller;
+    for (const doc of this.docs) scroller.appendChild(this.buildDocGroup(doc));
+    const add = button('+', 'pe-tile-add', () => this.pickFiles());
+    add.title = 'Add more images or PDFs';
+    add.setAttribute('aria-label', 'Add files');
+    scroller.appendChild(add);
+    return scroller;
   }
 
-  private updateModeUI(): void {
-    for (const [m, el] of this.modeEls) {
-      el.classList.toggle('pe-mode-on', m === this.mode);
-      el.disabled = this.deepState === 'loading';
-    }
-    const deepEl = this.modeEls.get('deep');
-    if (deepEl) deepEl.textContent = this.deepState === 'loading' ? 'Deep Read · loading…' : 'Deep Read';
-    // Offer Unload only when the model is resident and nothing is mid-read.
-    if (this.unloadBtn) this.unloadBtn.hidden = !(this.deepState === 'ready' && !this.queue.busy);
-  }
-
-  private buildDocList(): HTMLElement {
-    const list = document.createElement('div');
-    list.className = 'pe-doclist';
-    for (const doc of this.docs) list.appendChild(this.buildDocCard(doc));
-    return list;
-  }
-
-  private buildDocCard(doc: DocumentRecord): HTMLElement {
-    const card = document.createElement('section');
-    card.className = 'pe-doc';
+  private buildDocGroup(doc: DocumentRecord): HTMLElement {
+    const group = document.createElement('section');
+    group.className = 'pe-cargroup';
 
     const head = document.createElement('div');
-    head.className = 'pe-doc-head';
+    head.className = 'pe-cargroup-head';
 
     const titles = document.createElement('div');
-    titles.className = 'pe-doc-titles';
+    titles.className = 'pe-cargroup-titles';
     const name = document.createElement('div');
-    name.className = 'pe-doc-name';
+    name.className = 'pe-cargroup-name';
     name.textContent = doc.name;
     name.title = doc.name;
     const rollup = document.createElement('div');
-    rollup.className = 'pe-doc-rollup';
+    rollup.className = 'pe-cargroup-rollup';
     this.rollupEls.set(doc.id, rollup);
     titles.append(name, rollup);
 
     const actions = document.createElement('div');
-    actions.className = 'pe-doc-actions';
+    actions.className = 'pe-cargroup-actions';
     const dl = button('', 'pe-iconbtn', () => void this.onDownloadDoc(doc));
     dl.title = 'Download this document’s Markdown';
     dl.setAttribute('aria-label', `Download ${doc.name}`);
@@ -487,65 +466,139 @@ export class Workspace {
 
     head.append(titles, actions);
 
-    const chips = document.createElement('div');
-    chips.className = 'pe-pagechips';
-    for (const page of this.pagesByDoc.get(doc.id) ?? []) chips.appendChild(this.buildChip(page));
+    const tiles = document.createElement('div');
+    tiles.className = 'pe-cartiles';
+    for (const page of this.pagesByDoc.get(doc.id) ?? []) tiles.appendChild(this.buildTile(page));
 
-    card.append(head, chips);
+    group.append(head, tiles);
     this.updateRollup(doc.id);
-    return card;
+    return group;
   }
 
-  private buildChip(page: PageRecord): HTMLButtonElement {
-    const chip = document.createElement('button');
-    chip.className = 'pe-chip';
-    chip.dataset.pageId = page.id;
-    chip.addEventListener('click', () => this.onChipClick(page.id));
-    this.chipEls.set(page.id, chip);
-    this.applyChip(chip, page);
-    return chip;
+  private buildTile(page: PageRecord): HTMLButtonElement {
+    const tile = document.createElement('button');
+    tile.className = 'pe-tile';
+    tile.dataset.pageId = page.id;
+
+    const fig = document.createElement('span');
+    fig.className = 'pe-tile-fig';
+    const img = document.createElement('img');
+    img.className = 'pe-tile-img';
+    img.alt = '';
+    img.style.display = 'none';
+    const dot = document.createElement('span');
+    dot.className = 'pe-tile-dot';
+    fig.append(img, dot);
+
+    const no = document.createElement('span');
+    no.className = 'pe-tile-no';
+    no.textContent = String(page.pageNo);
+
+    tile.append(fig, no);
+    tile.addEventListener('click', () => this.onTileClick(page.id));
+    this.tileEls.set(page.id, tile);
+    this.applyTile(tile, page);
+    return tile;
   }
 
-  private applyChip(chip: HTMLButtonElement, page: PageRecord): void {
-    chip.dataset.status = page.status;
-    chip.classList.toggle('pe-selected', page.id === this.selectedPageId);
+  private applyTile(tile: HTMLButtonElement, page: PageRecord): void {
+    tile.dataset.status = page.status;
+    tile.classList.toggle('pe-selected', page.id === this.selectedPageId);
     const clickable = PROCESSED.has(page.status) || page.status === 'error' || page.status === 'cancelled';
-    chip.disabled = !clickable;
+    tile.disabled = !clickable;
     const busy = page.status === 'processing' || page.status === 'rasterizing';
-    chip.innerHTML = busy ? `<span class="pe-spin pe-spin-sm"></span>${page.pageNo}` : String(page.pageNo);
-    chip.title = `Page ${page.pageNo} — ${CHIP_TITLE[page.status]}`;
+    const dot = tile.querySelector<HTMLElement>('.pe-tile-dot');
+    if (dot) dot.innerHTML = busy ? '<span class="pe-spin pe-spin-sm"></span>' : '';
+    tile.title = `Page ${page.pageNo} — ${TILE_TITLE[page.status]}`;
+  }
+
+  private buildReviewHost(): HTMLElement {
+    const host = document.createElement('div');
+    host.className = 'pe-review-host';
+    this.reviewHost = host;
+    return host;
+  }
+
+  // ---------- thumbnails ----------
+
+  /** (Re)observe every processed tile so its thumbnail loads when it scrolls into
+   *  view. PDF thumbnails rasterize on demand, so we only fetch what's visible. */
+  private observeVisibleThumbs(): void {
+    if (!this.carouselEl) return;
+    this.thumbObserver?.disconnect();
+    this.thumbObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          const id = (e.target as HTMLElement).dataset.pageId as PageId | undefined;
+          this.thumbObserver?.unobserve(e.target);
+          if (id) void this.loadThumb(id);
+        }
+      },
+      { root: this.carouselEl, rootMargin: '300px' },
+    );
+    for (const [id, tile] of this.tileEls) {
+      const page = this.pageMap.get(id);
+      if (page && PROCESSED.has(page.status) && !this.thumbUrls.has(id)) this.thumbObserver.observe(tile);
+      else if (this.thumbUrls.has(id)) this.setTileImg(id, this.thumbUrls.get(id)!);
+    }
+  }
+
+  private async loadThumb(id: PageId): Promise<void> {
+    if (this.thumbUrls.has(id)) {
+      this.setTileImg(id, this.thumbUrls.get(id)!);
+      return;
+    }
+    if (this.thumbPending.has(id)) return;
+    const page = this.pageMap.get(id);
+    if (!page || !PROCESSED.has(page.status)) return;
+    const doc = this.docs.find((d) => d.id === page.docId);
+    if (!doc) return;
+    this.thumbPending.add(id);
+    try {
+      const blob = await pageImageBlob(doc, page);
+      const url = await makeThumbUrl(blob);
+      this.thumbUrls.set(id, url);
+      this.setTileImg(id, url);
+    } catch (e) {
+      log.debug('thumbnail unavailable', e);
+    } finally {
+      this.thumbPending.delete(id);
+    }
+  }
+
+  private setTileImg(id: PageId, url: string): void {
+    const img = this.tileEls.get(id)?.querySelector<HTMLImageElement>('.pe-tile-img');
+    if (img) {
+      img.src = url;
+      img.style.display = 'block';
+    }
   }
 
   // ---------- viewer ----------
 
-  private buildViewer(): HTMLElement {
-    const v = document.createElement('div');
-    v.className = 'pe-viewer';
-    return v;
-  }
-
   private renderViewer(): void {
-    const v = this.el.querySelector<HTMLElement>('.pe-viewer');
-    if (!v) return;
+    const host = this.reviewHost;
+    if (!host) return;
 
     this.teardownSurface();
 
     if (!this.selectedPageId) {
-      v.innerHTML = `<div class="pe-viewer-empty">${escapeHtml(
-        'Select a finished page to review what Private Eye read.',
+      host.innerHTML = `<div class="pe-viewer-empty">${escapeHtml(
+        'Select a finished page from the strip above to review what Private Eye read.',
       )}</div>`;
       return;
     }
     const page = this.pageMap.get(this.selectedPageId);
     const doc = page && this.docs.find((d) => d.id === page.docId);
     if (!page || !doc || !PROCESSED.has(page.status)) {
-      v.innerHTML = `<div class="pe-viewer-empty">${escapeHtml('This page hasn’t been read yet.')}</div>`;
+      host.innerHTML = `<div class="pe-viewer-empty">${escapeHtml('This page hasn’t been read yet.')}</div>`;
       return;
     }
 
     const surface = new ReviewSurface(doc, page, this.quick, () => void this.readPageDeep(page));
     this.surface = surface;
-    v.replaceChildren(surface.el);
+    host.replaceChildren(surface.el);
     void surface.load().catch((e) => {
       showErrorModal({
         kind: 'Unknown',
@@ -566,7 +619,7 @@ export class Workspace {
 
   // ---------- interactions ----------
 
-  private onChipClick(pageId: PageId): void {
+  private onTileClick(pageId: PageId): void {
     const page = this.pageMap.get(pageId);
     if (!page) return;
     if (PROCESSED.has(page.status)) {
@@ -587,8 +640,8 @@ export class Workspace {
         const i = arr.findIndex((p) => p.id === page.id);
         if (i >= 0) arr[i] = fresh;
       }
-      const chip = this.chipEls.get(page.id);
-      if (chip) this.applyChip(chip, fresh);
+      const tile = this.tileEls.get(page.id);
+      if (tile) this.applyTile(tile, fresh);
       this.updateRollup(page.docId);
       this.errorShownThisBatch = false;
       this.queue.enqueue([page.id]);
@@ -598,11 +651,10 @@ export class Workspace {
   private selectPage(pageId: PageId): void {
     const prev = this.selectedPageId;
     this.selectedPageId = pageId;
-    if (prev && prev !== pageId) {
-      const prevChip = this.chipEls.get(prev);
-      if (prevChip) prevChip.classList.remove('pe-selected');
-    }
-    this.chipEls.get(pageId)?.classList.add('pe-selected');
+    if (prev && prev !== pageId) this.tileEls.get(prev)?.classList.remove('pe-selected');
+    const tile = this.tileEls.get(pageId);
+    tile?.classList.add('pe-selected');
+    tile?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     this.renderViewer();
   }
 
@@ -635,7 +687,12 @@ export class Workspace {
 
     for (const p of pages) {
       this.pageMap.delete(p.id);
-      this.chipEls.delete(p.id);
+      this.tileEls.delete(p.id);
+      const url = this.thumbUrls.get(p.id);
+      if (url) {
+        URL.revokeObjectURL(url);
+        this.thumbUrls.delete(p.id);
+      }
       if (this.selectedPageId === p.id) this.selectedPageId = null;
     }
     this.pagesByDoc.delete(doc.id);
@@ -691,7 +748,7 @@ export class Workspace {
           this.stopDeepTicker();
           this.startRotation();
         }
-        this.updateModeUI();
+        this.updateDeepChip();
         this.updateStatusBar();
         break;
       case 'stage':
@@ -715,13 +772,19 @@ export class Workspace {
           const i = arr.findIndex((p) => p.id === e.page.id);
           if (i >= 0) arr[i] = e.page;
         }
-        const chip = this.chipEls.get(e.page.id);
-        if (chip) this.applyChip(chip, e.page);
+        const tile = this.tileEls.get(e.page.id);
+        if (tile) this.applyTile(tile, e.page);
         this.updateRollup(e.page.docId);
         this.updateStatusBar();
-        // Auto-open the first finished page, and refresh the viewer if the
-        // currently-open page just finished.
+        // A re-read can change a page's content: drop any stale thumbnail so it
+        // regenerates, and refresh the open page if it just finished.
         if (PROCESSED.has(e.page.status)) {
+          const url = this.thumbUrls.get(e.page.id);
+          if (url) {
+            URL.revokeObjectURL(url);
+            this.thumbUrls.delete(e.page.id);
+          }
+          if (tile) void this.loadThumb(e.page.id);
           if (!this.selectedPageId) this.selectPage(e.page.id);
           else if (this.selectedPageId === e.page.id) this.renderViewer();
         }
@@ -738,13 +801,13 @@ export class Workspace {
         this.stopRotation();
         this.stopDeepTicker();
         this.errorShownThisBatch = false;
-        this.updateModeUI(); // batch ended → Unload becomes available again
+        this.updateDeepChip(); // batch ended → Unload becomes available again
         this.updateStatusBar();
         break;
     }
   }
 
-  // ---------- status bar + rollups ----------
+  // ---------- status line + rollups ----------
 
   private startRotation(): void {
     if (this.rotateTimer != null) return;
@@ -781,8 +844,33 @@ export class Workspace {
     return { total, read, done };
   }
 
+  /** Show "Deep model loaded · Unload" only when the model is resident and nothing
+   *  is mid-read (terminating its worker during a decode would lose work). */
+  private updateDeepChip(): void {
+    if (!this.deepChip) return;
+    const show = this.deepState === 'ready' && !this.queue.busy;
+    this.deepChip.hidden = !show;
+    if (show) {
+      this.deepChip.textContent = 'Deep model loaded · Unload';
+      this.deepChip.title = 'Free the Deep Read model from memory (~1.4 GB)';
+    }
+  }
+
+  private setRun(mode: string, text: string, sub: string, busy: boolean): void {
+    if (this.runMode) {
+      this.runMode.textContent = mode;
+      this.runMode.hidden = mode === '';
+    }
+    if (this.runText) this.runText.textContent = text;
+    if (this.runSub) this.runSub.textContent = sub;
+    if (this.runLight) {
+      this.runLight.classList.toggle('pe-runlight-on', busy);
+      this.runLight.dataset.mode = busy ? this.currentMode : '';
+    }
+  }
+
   private updateStatusBar(): void {
-    if (!this.statusMain || !this.statusSub || !this.statusBar || !this.statusFill) return;
+    if (!this.runText || !this.progressBar || !this.progressFill) return;
     const { total, read, done } = this.counts();
 
     if (this.downloadAllBtn) this.downloadAllBtn.disabled = read === 0;
@@ -791,16 +879,20 @@ export class Workspace {
     // The one-time Deep Read model download takes over the status line while it
     // runs (the queue waits on it). Non-blocking — the rest of the UI stays usable.
     if (this.deepState === 'loading') {
-      this.statusMain.textContent = SPECIALIST;
       if (this.deepTotal > 0) {
         const pct = Math.round((this.deepLoaded / this.deepTotal) * 100);
-        this.statusSub.textContent = `Downloading the Deep Read model — ${fmtBytes(this.deepLoaded)} / ${fmtBytes(this.deepTotal)} (${pct}%), one time. Quick Read still works.`;
-        this.statusBar.classList.remove('indeterminate');
-        this.statusFill.style.width = `${(this.deepLoaded / this.deepTotal) * 100}%`;
+        this.setRun(
+          'Deep Read',
+          SPECIALIST,
+          `Downloading the Deep Read model — ${fmtBytes(this.deepLoaded)} / ${fmtBytes(this.deepTotal)} (${pct}%), one time. Quick Read still works.`,
+          true,
+        );
+        this.progressBar.classList.remove('indeterminate');
+        this.progressFill.style.width = `${(this.deepLoaded / this.deepTotal) * 100}%`;
       } else {
-        this.statusSub.textContent = 'Reaching the model library…';
-        this.statusBar.classList.add('indeterminate');
-        this.statusFill.style.width = '';
+        this.setRun('Deep Read', SPECIALIST, 'Reaching the model library…', true);
+        this.progressBar.classList.add('indeterminate');
+        this.progressFill.style.width = '';
       }
       return;
     }
@@ -808,23 +900,29 @@ export class Workspace {
     if (this.queue.busy && this.currentPageId) {
       const page = this.pageMap.get(this.currentPageId);
       const doc = page && this.docs.find((d) => d.id === page.docId);
-      this.statusBar.classList.remove('indeterminate');
-      this.statusFill.style.width = `${total ? (done / total) * 100 : 0}%`;
+      this.progressBar.classList.remove('indeterminate');
+      this.progressFill.style.width = `${total ? (done / total) * 100 : 0}%`;
+      const where = page && doc ? `${doc.name} · page ${page.pageNo}` : '';
       if (this.currentMode === 'deep') {
         const secs = Math.max(0, Math.round((performance.now() - this.deepStartedAt) / 1000));
-        this.statusMain.textContent = deepPhaseMessage(this.currentDeepPhase, this.currentDeepIndex, this.currentDeepTotal);
-        this.statusSub.textContent =
-          page && doc ? `${doc.name} · page ${page.pageNo} · ${secs}s · ${read} of ${total} read` : `${secs}s · ${read} of ${total} read`;
+        this.setRun(
+          'Deep Read',
+          deepPhaseMessage(this.currentDeepPhase, this.currentDeepIndex, this.currentDeepTotal),
+          [where, `${secs}s`, `${read} of ${total} read`].filter(Boolean).join(' · '),
+          true,
+        );
       } else {
-        this.statusMain.textContent = this.ready ? stageMessage(this.currentStage, this.tick) : WARMING;
-        this.statusSub.textContent =
-          page && doc ? `${doc.name} · page ${page.pageNo} · ${read} of ${total} read` : `${read} of ${total} read`;
+        this.setRun(
+          'Quick Read',
+          this.ready ? stageMessage(this.currentStage, this.tick) : WARMING,
+          [where, `${read} of ${total} read`].filter(Boolean).join(' · '),
+          true,
+        );
       }
     } else {
-      this.statusMain.textContent = read > 0 && done === total ? CASE_CLOSED : 'All caught up.';
-      this.statusSub.textContent = `${read} of ${total} read`;
-      this.statusBar.classList.remove('indeterminate');
-      this.statusFill.style.width = `${total ? (done / total) * 100 : 0}%`;
+      this.setRun('', read > 0 && done === total ? CASE_CLOSED : 'All caught up.', `${read} of ${total} read`, false);
+      this.progressBar.classList.remove('indeterminate');
+      this.progressFill.style.width = `${total ? (done / total) * 100 : 0}%`;
     }
   }
 
@@ -843,14 +941,14 @@ export class Workspace {
   }
 }
 
-const CHIP_TITLE: Record<PageRecord['status'], string> = {
+const TILE_TITLE: Record<PageRecord['status'], string> = {
   queued: 'waiting',
   rasterizing: 'rendering…',
   processing: 'reading…',
   'needs-review': 'read — a look is suggested',
   done: 'read',
   error: 'couldn’t be read — click for details',
-  cancelled: 'cancelled',
+  cancelled: 'cancelled — click to retry',
 };
 
 function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
@@ -861,5 +959,5 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
   return b;
 }
 
-const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 4 5-4"/><path d="M5 21h14"/></svg>`;
-const ICON_TRASH = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M7 7l1 13h8l1-13"/></svg>`;
+const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 4 5-4"/><path d="M5 21h14"/></svg>`;
+const ICON_TRASH = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M7 7l1 13h8l1-13"/></svg>`;

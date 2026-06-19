@@ -1,11 +1,15 @@
 /**
- * The review surface: the coordinator that turns one processed page into the
- * full review/correct experience. It loads the page's ReviewSession + raster,
- * assembles the verdict banner, confidence overlay, attention controls, worklist,
- * and the block-linked Markdown editor, and wires them together — hover a block
- * to light its region, step the worklist worst-first, edit a block and watch it
- * save. It owns the page's transient resources (image object URL, overlay,
- * session) and releases them on destroy.
+ * The review surface: the coordinator that turns one processed page into the full
+ * review/correct experience — a zoomable scan beside the structured Markdown.
+ *
+ * Layout: a thin confidence filter spans both panes (verdict + sensitivity + a
+ * worst-first stepper); below it the scan (zoom/pan, confidence overlay, region
+ * draw) and the Markdown sit side by side and own the width. Review is inline:
+ * each flagged spot is a highlight on the token plus a numbered book-tab in the
+ * Markdown gutter, cross-lit with its scan region in both directions. Deep Read is
+ * offered here, per page, for an exact-transcription result the heavier model might
+ * resolve. The surface owns the page's transient resources and frees them on
+ * destroy.
  */
 import type { DocumentRecord, PageRecord } from '../orchestrate/types.ts';
 import { pageImageBlob } from '../orchestrate/raster.ts';
@@ -17,12 +21,13 @@ import type { BBox } from '../core/types.ts';
 import type { Block } from '../structure/blocks.ts';
 import { ReviewSession, type ReviewState } from './session.ts';
 import { createOverlay, type OverlayHandle } from './overlay.ts';
-import { createVerdictBanner } from './verdict-banner.ts';
+import { createScanView, type ScanViewHandle } from './scan-view.ts';
 import { createThreshold, type ThresholdHandle } from './threshold.ts';
-import { createAttentionPanel, type AttentionPanelHandle } from './attention-panel.ts';
-import { createEditor, type EditorHandle } from './markdown-editor.ts';
+import { createEditor, type BlockAnnotation, type EditorHandle } from './markdown-editor.ts';
 import { baseUid, blockToMarkdown } from './corrections.ts';
 import { anchorUidFor, cropRegionToBlob } from './region-draw.ts';
+import { buildAnnotations } from './annotate.ts';
+import { verdictView } from './labels.ts';
 import type { AttentionItem } from './attention.ts';
 import { SAVED } from './copy.ts';
 
@@ -33,14 +38,15 @@ export class ReviewSurface {
 
   private session: ReviewSession | null = null;
   private overlay: OverlayHandle | null = null;
+  private scan: ScanViewHandle | null = null;
   private editor: EditorHandle | null = null;
-  private panel: AttentionPanelHandle | null = null;
   private threshold: ThresholdHandle | null = null;
   private unsub: (() => void) | null = null;
 
   private image: HTMLImageElement | null = null;
   private imgUrl: string | null = null;
   private attention: AttentionItem[] = [];
+  private annByItem = new Map<string, BlockAnnotation>();
   private stepIdx = 0;
   private lastMarkdown: string | null = null;
   private destroyed = false;
@@ -50,6 +56,7 @@ export class ReviewSurface {
   private drawBtn: HTMLButtonElement | null = null;
   private savedTag: HTMLElement | null = null;
   private savedTimer: number | null = null;
+  private popClose: (() => void) | null = null;
 
   constructor(
     private readonly doc: DocumentRecord,
@@ -97,9 +104,12 @@ export class ReviewSurface {
 
   destroy(): void {
     this.destroyed = true;
+    this.closePopover();
     if (this.savedTimer != null) clearTimeout(this.savedTimer);
     this.unsub?.();
     this.unsub = null;
+    this.scan?.destroy();
+    this.scan = null;
     this.overlay?.destroy();
     this.overlay = null;
     this.session?.destroy(); // flushes any pending save
@@ -115,15 +125,10 @@ export class ReviewSurface {
   private build(session: ReviewSession, image: HTMLImageElement | null): void {
     const init = session.state();
 
-    const head = document.createElement('div');
-    head.className = 'pe-viewer-head';
-    head.textContent = `${this.doc.name} · page ${this.page.pageNo}`;
-
-    const banner = createVerdictBanner(session.verification, session.pipeline, session.fellBack);
-
     this.threshold = createThreshold({
       tau: init.tau,
       onTau: (t) => session.setTau(t),
+      onPrev: () => this.stepPrev(),
       onNext: () => this.stepNext(),
     });
 
@@ -134,92 +139,161 @@ export class ReviewSurface {
           height: session.height,
           layer: session.uncertainty,
           tau: init.tau,
+          onHoverRegion: (bi) => this.onRegionHover(bi),
         })
       : null;
-
-    this.panel = createAttentionPanel({
-      onShow: (item) => this.focusItem(item),
-      onDismiss: (item) => session.dismiss(item.id),
-      onUseAiReading: (item) => this.useAiReading(item),
-    });
+    this.scan =
+      image && this.overlay
+        ? createScanView({ content: this.overlay.el, pageWidth: session.width, pageHeight: session.height })
+        : null;
 
     this.editor = createEditor({
       onEdit: (uid, md) => session.editBlock(uid, md),
       onRemove: (uid) => session.removeBlock(uid),
       onHover: (box) => this.overlay?.hover(box),
+      onItemActivate: (id, anchor) => this.activateItem(id, anchor),
+      onItemHover: (id) => this.onItemHover(id),
     });
 
-    const controls = document.createElement('div');
-    controls.className = 'pe-review-controls';
-    controls.append(this.threshold.el, this.buildToolbar(session));
+    // Filter bar (spans both panes): verdict + sensitivity + stepper.
+    const filterbar = document.createElement('div');
+    filterbar.className = 'pe-filterbar';
+    filterbar.append(this.buildVerdictChip(session), this.threshold.el);
 
-    const left = document.createElement('div');
-    left.className = 'pe-review-main';
-    if (this.overlay) left.appendChild(this.overlay.el);
-    else left.innerHTML = `<div class="pe-viewer-empty">${escapeHtml('Page image unavailable.')}</div>`;
+    // Scan pane.
+    const scanPane = document.createElement('section');
+    scanPane.className = 'pe-pane pe-pane-scan';
+    scanPane.append(this.buildScanHead());
+    if (this.scan) scanPane.appendChild(this.scan.el);
+    else {
+      const empty = document.createElement('div');
+      empty.className = 'pe-pane-empty';
+      empty.textContent = 'Page image unavailable.';
+      scanPane.appendChild(empty);
+    }
 
-    const right = document.createElement('div');
-    right.className = 'pe-review-side';
-    right.append(this.panel.el, this.editor.el);
+    // Markdown pane.
+    const mdPane = document.createElement('section');
+    mdPane.className = 'pe-pane pe-pane-md';
+    mdPane.append(this.buildMdHead(session), this.editor.el);
 
-    const grid = document.createElement('div');
-    grid.className = 'pe-review-grid';
-    grid.append(left, right);
+    const panes = document.createElement('div');
+    panes.className = 'pe-panes';
+    panes.append(scanPane, mdPane);
 
-    this.el.replaceChildren(head, banner, controls, grid);
+    this.el.replaceChildren(filterbar, panes);
   }
 
-  private buildToolbar(session: ReviewSession): HTMLElement {
-    const bar = document.createElement('div');
-    bar.className = 'pe-review-toolbar';
+  private buildVerdictChip(session: ReviewSession): HTMLElement {
+    const v = verdictView(session.verification, session.fellBack);
+    const chip = document.createElement('div');
+    chip.className = `pe-verdict-chip pe-tone-${v.tone}`;
+    chip.setAttribute('role', 'status');
+    chip.title = v.detail;
+    chip.innerHTML = `<span class="pe-tone-dot" aria-hidden="true"></span><span class="pe-verdict-chip-text">${escapeHtml(v.title)}</span>`;
+    return chip;
+  }
 
-    const copy = button('Copy Markdown', 'pe-btn', () => {
-      void navigator.clipboard?.writeText(session.markdown).then(() => {
-        const prev = copy.textContent;
-        copy.textContent = 'Copied';
-        setTimeout(() => (copy.textContent = prev), 1400);
-      });
+  private buildScanHead(): HTMLElement {
+    const head = document.createElement('div');
+    head.className = 'pe-pane-head';
+
+    const title = document.createElement('span');
+    title.className = 'pe-pane-title';
+    title.textContent = `${this.doc.name} · page ${this.page.pageNo}`;
+    title.title = title.textContent;
+
+    const tools = document.createElement('div');
+    tools.className = 'pe-pane-tools';
+    if (this.scan) {
+      const zoom = document.createElement('div');
+      zoom.className = 'pe-zoom';
+      zoom.append(
+        iconBtn('−', 'Zoom out', () => this.scan?.zoomBy(1 / 1.25)),
+        iconBtn('Fit', 'Fit to width', () => this.scan?.fit()),
+        iconBtn('100%', 'Actual size', () => this.scan?.actual()),
+        iconBtn('+', 'Zoom in', () => this.scan?.zoomBy(1.25)),
+      );
+      tools.appendChild(zoom);
+    }
+    if (this.overlay) {
+      this.drawBtn = iconBtn('Mark a missed area', 'Draw a box over text the read missed', () =>
+        this.startRegionDraw(),
+      );
+      this.drawBtn.classList.add('pe-pane-btn');
+      tools.appendChild(this.drawBtn);
+    }
+
+    head.append(title, tools);
+    return head;
+  }
+
+  private buildMdHead(session: ReviewSession): HTMLElement {
+    const head = document.createElement('div');
+    head.className = 'pe-pane-head';
+
+    const badge = document.createElement('span');
+    badge.className = 'pe-readby';
+    const readByText =
+      session.pipeline === 'G'
+        ? 'Read by Deep Read'
+        : session.fellBack
+          ? 'Deep Read → exact transcription'
+          : 'Read by Quick Read';
+    badge.innerHTML = `<span class="pe-readby-dot" aria-hidden="true"></span>${escapeHtml(readByText)}`;
+    badge.title = readByText;
+
+    const tools = document.createElement('div');
+    tools.className = 'pe-pane-tools';
+
+    // Deep Read escalation — the single way to invoke Deep Read, per page, offered
+    // only for an exact-transcription result (Quick Read, or a Deep Read fallback).
+    if (this.onReadDeep && session.pipeline === 'E') {
+      const deep = iconBtn('Deep Read this page', 'Re-read this page with the heavier AI-assisted model', () =>
+        this.onReadDeep?.(),
+      );
+      deep.classList.add('pe-pane-btn', 'pe-pane-btn-accent');
+      tools.appendChild(deep);
+    }
+
+    const copy = iconBtn('Copy', 'Copy this page’s Markdown', () => {
+      void navigator.clipboard?.writeText(session.markdown).then(() => this.flashStatus('Copied.'));
     });
-    const download = button('Download page', 'pe-btn', () => {
+    const download = iconBtn('Download', 'Download this page’s Markdown', () => {
       const name = `${markdownName(this.doc).replace(/\.md$/, '')}.p${this.page.pageNo}.md`;
       triggerDownload(new Blob([session.markdown], { type: 'text/markdown' }), name);
     });
-    this.undoBtn = button('Undo', 'pe-btn', () => session.undo());
-    this.resetBtn = button('Revert all', 'pe-btn', () => session.reset());
+    this.undoBtn = iconBtn('Undo', 'Undo the last change', () => session.undo());
+    this.resetBtn = iconBtn('Revert all', 'Revert every change on this page', () => session.reset());
     this.undoBtn.disabled = true;
     this.resetBtn.disabled = true;
+    copy.classList.add('pe-pane-btn');
+    download.classList.add('pe-pane-btn');
+    this.undoBtn.classList.add('pe-pane-btn');
+    this.resetBtn.classList.add('pe-pane-btn');
 
     this.savedTag = document.createElement('span');
     this.savedTag.className = 'pe-saved-tag';
     this.savedTag.textContent = 'Edits save automatically';
 
-    bar.append(copy, download, this.undoBtn, this.resetBtn);
-    // Region draw needs the page image; only offer it when the overlay loaded.
-    if (this.overlay) {
-      this.drawBtn = button('Mark a missed area', 'pe-btn', () => this.startRegionDraw());
-      bar.append(this.drawBtn);
-    }
-    // Offer a Deep Read re-read for an exact-transcription result (Quick Read, or
-    // a Deep Read that fell back to it) — the heavier model may resolve tricky
-    // tables/handwriting the quick pass left uncertain.
-    if (this.onReadDeep && session.pipeline === 'E') {
-      bar.append(button('Read with Deep Read', 'pe-btn', () => this.onReadDeep?.()));
-    }
-    bar.append(this.savedTag);
-    return bar;
+    tools.append(copy, download, this.undoBtn, this.resetBtn, this.savedTag);
+    head.append(badge, tools);
+    return head;
   }
 
   // ---------- reactive apply ----------
 
   private apply(s: ReviewState): void {
     this.attention = s.attention;
-    // Only re-render the editor when the document actually changed — never on a
-    // τ drag — so an open inline editor isn't clobbered mid-edit.
+    // Only re-render the editor when the document actually changed — never on a τ
+    // drag — so an open inline editor isn't clobbered mid-edit.
     if (s.markdown !== this.lastMarkdown) {
       this.editor?.render(s.blocks);
       this.lastMarkdown = s.markdown;
     }
-    this.panel?.render(s.attention);
+    const anns = buildAnnotations(s.attention, s.blocks);
+    this.annByItem = new Map(anns.map((a) => [a.id, a]));
+    this.editor?.setAnnotations(anns);
     this.threshold?.setCount(s.attention.length);
     this.threshold?.setStepEnabled(s.attention.length > 0);
     this.overlay?.setTau(s.tau);
@@ -227,7 +301,7 @@ export class ReviewSurface {
     if (this.resetBtn) this.resetBtn.disabled = !s.edited;
   }
 
-  // ---------- worklist navigation ----------
+  // ---------- worklist navigation + cross-highlight ----------
 
   private stepNext(): void {
     if (!this.attention.length) return;
@@ -236,17 +310,114 @@ export class ReviewSurface {
     this.focusItem(item);
   }
 
+  private stepPrev(): void {
+    if (!this.attention.length) return;
+    this.stepIdx = (this.stepIdx - 1 + this.attention.length) % this.attention.length;
+    this.focusItem(this.attention[this.stepIdx]!);
+  }
+
   private focusItem(item: AttentionItem): void {
     this.overlay?.focus(item.box);
-    if (item.blockIndex != null && item.blockIndex >= 0) this.editor?.focusBlock(baseUid(item.blockIndex));
+    this.scan?.zoomToBox(item.box);
+    this.editor?.highlightItem(item.id);
+    const uid = this.annByItem.get(item.id)?.uid;
+    if (uid) this.editor?.focusBlock(uid);
+  }
+
+  /** Hover a flagged spot in the Markdown → light its scan region (Markdown → scan). */
+  private onItemHover(id: string | null): void {
+    this.editor?.highlightItem(id);
+    if (!id) {
+      this.overlay?.hover(null);
+      return;
+    }
+    const item = this.attention.find((it) => it.id === id);
+    if (item) this.overlay?.hover(item.box);
+  }
+
+  /** Hover a region on the scan → light the matching Markdown block (scan → Markdown). */
+  private onRegionHover(blockIndex: number | null): void {
+    if (blockIndex == null) {
+      this.editor?.highlightBlock(null);
+      this.overlay?.hover(null);
+      return;
+    }
+    const uid = baseUid(blockIndex);
+    this.editor?.highlightBlock(uid);
+    const box = this.session?.uncertainty?.blocks.find((b) => b.blockIndex === blockIndex)?.box;
+    this.overlay?.hover(box ?? null);
+  }
+
+  // ---------- per-spot actions (popover) ----------
+
+  private activateItem(id: string, anchor: HTMLElement): void {
+    const item = this.attention.find((it) => it.id === id);
+    if (!item) return;
+    this.focusItem(item);
+    this.openPopover(item, anchor);
+  }
+
+  private openPopover(item: AttentionItem, anchor: HTMLElement): void {
+    this.closePopover();
+    const pop = document.createElement('div');
+    pop.className = 'pe-pop';
+
+    const detail = document.createElement('div');
+    detail.className = 'pe-pop-detail';
+    detail.textContent = item.detail;
+    pop.appendChild(detail);
+
+    const actions = document.createElement('div');
+    actions.className = 'pe-pop-actions';
+
+    // For a cross-model conflict with an AI alternative, offer a one-click swap.
+    if (item.conflict && item.conflict.vlmReading) {
+      actions.appendChild(
+        popBtn(`Use the AI’s “${item.conflict.vlmReading}”`, true, () => {
+          this.useAiReading(item);
+          this.closePopover();
+        }),
+      );
+    }
+    actions.appendChild(
+      popBtn('Dismiss', false, () => {
+        this.session?.dismiss(item.id);
+        this.closePopover();
+      }),
+    );
+    pop.appendChild(actions);
+
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect();
+    pop.style.top = `${Math.round(r.bottom + 6)}px`;
+    pop.style.left = `${Math.round(Math.min(r.left, window.innerWidth - pop.offsetWidth - 12))}px`;
+
+    const onDocClick = (e: MouseEvent): void => {
+      if (!pop.contains(e.target as Node) && e.target !== anchor) this.closePopover();
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') this.closePopover();
+    };
+    // Defer so the click that opened the popover doesn't immediately close it.
+    setTimeout(() => document.addEventListener('mousedown', onDocClick), 0);
+    document.addEventListener('keydown', onKey);
+    this.popClose = () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+      pop.remove();
+      this.popClose = null;
+    };
+  }
+
+  private closePopover(): void {
+    this.popClose?.();
   }
 
   /** Override a cross-model numeric conflict to the AI's reading. Under the 'replace'
-   *  anchor policy the safe scan (OCR) reading is already in the block, so "use the AI
-   *  reading" swaps that applied value back to the VLM's — but only when the scan value
-   *  appears exactly once and isn't embedded in a longer digit run, so we can't change the
-   *  wrong occurrence; otherwise we open the block for a manual fix. Resolving drops the
-   *  conflict from the worklist. */
+   *  anchor policy the safe scan (OCR) reading is already in the block, so this swaps
+   *  that applied value back to the VLM's — but only when the scan value appears
+   *  exactly once and isn't embedded in a longer digit run, so we can't change the
+   *  wrong occurrence; otherwise we open the block for a manual fix. */
   private useAiReading(item: AttentionItem): void {
     const ocr = item.conflict?.ocrReading;
     const vlm = item.conflict?.vlmReading;
@@ -328,11 +499,7 @@ export class ReviewSurface {
     this.drawBtn.classList.toggle('pe-btn-active', state === 'drawing');
     this.drawBtn.disabled = state !== 'idle';
     this.drawBtn.textContent =
-      state === 'drawing'
-        ? 'Draw a box — Esc to cancel'
-        : state === 'busy'
-          ? 'Reading the area…'
-          : 'Mark a missed area';
+      state === 'drawing' ? 'Draw a box — Esc to cancel' : state === 'busy' ? 'Reading the area…' : 'Mark a missed area';
   }
 
   // ---------- helpers ----------
@@ -366,9 +533,19 @@ export class ReviewSurface {
   }
 }
 
-function button(label: string, className: string, onClick: () => void): HTMLButtonElement {
+function iconBtn(label: string, title: string, onClick: () => void): HTMLButtonElement {
   const b = document.createElement('button');
-  b.className = className;
+  b.className = 'pe-btn';
+  b.textContent = label;
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function popBtn(label: string, primary: boolean, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = `pe-att-btn${primary ? ' pe-att-btn-primary' : ''}`;
   b.textContent = label;
   b.addEventListener('click', onClick);
   return b;
