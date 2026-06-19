@@ -53,7 +53,22 @@ function patchWasmMemoryMax(wasm: Buffer): Buffer {
 
 export function ensurePatchedWllama(opts: { stock?: boolean } = {}): { wllamaNpm: string; patched: boolean } {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'node_modules/@wllama/wllama/package.json'), 'utf8')) as { version: string };
-  const src = readFileSync(join(ROOT, 'node_modules/@wllama/wllama/esm/index.js'), 'utf8');
+  const rawSrc = readFileSync(join(ROOT, 'node_modules/@wllama/wllama/esm/index.js'), 'utf8');
+
+  // Worker-scope document guard (applied to EVERY build — orthogonal to the heap
+  // cap). wllama's `absoluteUrl` resolves its worker's wasm URL via
+  // `new URL(path, document.baseURI)`, an unguarded `document` reference. Private
+  // Eye runs wllama inside a Web Worker (the terminable Deep Read worker), where
+  // `document` is undefined, so this throws "ReferenceError: document is not
+  // defined" the instant the model loads (the prototype ran it on the main
+  // thread, so it never hit this). Fall back to the worker's own URL as the base;
+  // the URLs we pass are already absolute, so the base only needs to be a valid URL.
+  const pDoc = 'new URL(relativePath, document.baseURI).href';
+  const pDocFixed = 'new URL(relativePath, (typeof document !== "undefined" ? document.baseURI : self.location.href)).href';
+  if (rawSrc.split(pDoc).length !== 2) {
+    throw new Error('wllama absoluteUrl() shape changed — re-verify the worker-scope document guard');
+  }
+  const src = rawSrc.replace(pDoc, pDocFixed);
 
   // Stock pass-through (--stock-wllama): llama.cpp >= b9590 only ESTIMATES the
   // glm4v vision compute buffer (~963 MiB) instead of eagerly reserving 4.6 GB,
@@ -70,9 +85,10 @@ export function ensurePatchedWllama(opts: { stock?: boolean } = {}): { wllamaNpm
       JSON.stringify(
         {
           source: `@wllama/wllama@${pkg.version} esm/index.js + esm/wasm/wllama.wasm`,
-          patch: 'none (stock pass-through)',
+          patch: 'worker-scope document guard in absoluteUrl() (no memory-cap patch)',
           reason:
-            'bundled llama.cpp only estimates the glm4v vision buffer (<1 GiB) — the 4 GB WASM heap cap is not reached, so the memory-cap patch is unnecessary',
+            'bundled llama.cpp only estimates the glm4v vision buffer (<1 GiB) — the 4 GB WASM heap cap is not reached, so the memory-cap patch is unnecessary; ' +
+            'the absoluteUrl() document guard is still applied so the runtime loads inside a Web Worker (no DOM)',
           generatedBy: 'the eval harness (--stock-wllama)',
         },
         null,
@@ -107,7 +123,8 @@ export function ensurePatchedWllama(opts: { stock?: boolean } = {}): { wllamaNpm
         patch:
           `WASM memory maximum 4096 MB -> ${WASM_MEM_MAX_MB} MB in three places: ` +
           'glue getWasmMemory maxBytes (multithread), glue emscripten maximum (single-thread), ' +
-          'and the binary\'s imported-memory max limit (same-length LEB128, 1 byte)',
+          "and the binary's imported-memory max limit (same-length LEB128, 1 byte); " +
+          'plus a worker-scope document guard in absoluteUrl() so the runtime loads inside a Web Worker (no DOM)',
         reason:
           'llama.cpp b9437 (bundled) eagerly reserves a 4.6 GB worst-case glm4v vision buffer, over the 4 GB cap; ' +
           'upstream >= b9590 only estimates (963 MiB native) — re-evaluate at the next wllama llama.cpp sync',

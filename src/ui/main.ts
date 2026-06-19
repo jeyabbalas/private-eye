@@ -45,7 +45,7 @@ async function boot(): Promise<void> {
     },
   });
 
-  workspace = new Workspace(quick);
+  workspace = new Workspace(quick, caps);
   app.replaceChildren(buildHeader(), workspace.el);
 
   // Eagerly warm Quick Read as soon as the page loads (per product intent).

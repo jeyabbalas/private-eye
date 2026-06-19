@@ -18,6 +18,9 @@ export interface AttentionPanelHandle {
 export interface AttentionPanelOptions {
   onShow: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
+  /** Override a cross-model conflict to the AI reading (the safe scan reading is
+   *  already applied under the 'replace' anchor policy, so accepting it needs no action). */
+  onUseAiReading?: (item: AttentionItem) => void;
 }
 
 export function createAttentionPanel(opts: AttentionPanelOptions): AttentionPanelHandle {
@@ -57,6 +60,12 @@ function card(item: AttentionItem, opts: AttentionPanelOptions): HTMLElement {
 
   const actions = document.createElement('div');
   actions.className = 'pe-att-actions';
+  // The output already carries the safe scan reading (anchor 'replace'); for a
+  // cross-model conflict offer a one-click override to the AI's reading — the
+  // "override" half of accept/override (accepting the scan needs no action).
+  if (opts.onUseAiReading && item.conflict?.ocrReading) {
+    actions.append(miniBtn(`Use the AI’s “${truncate(item.conflict.vlmReading)}”`, () => opts.onUseAiReading!(item), true));
+  }
   actions.append(
     miniBtn('Show', () => opts.onShow(item)),
     miniBtn('Dismiss', () => opts.onDismiss(item)),
@@ -70,13 +79,17 @@ function card(item: AttentionItem, opts: AttentionPanelOptions): HTMLElement {
   return c;
 }
 
-function miniBtn(label: string, onClick: () => void): HTMLButtonElement {
+function miniBtn(label: string, onClick: () => void, primary = false): HTMLButtonElement {
   const b = document.createElement('button');
-  b.className = 'pe-att-btn';
+  b.className = 'pe-att-btn' + (primary ? ' pe-att-btn-primary' : '');
   b.textContent = label;
   b.addEventListener('click', (e) => {
     e.stopPropagation();
     onClick();
   });
   return b;
+}
+
+function truncate(s: string, n = 16): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }

@@ -13,7 +13,8 @@
  * true mid-decode cancellation via its abortable runner.
  */
 import { QuickClient } from '../workers/client.ts';
-import type { StageKey } from '../workers/protocol.ts';
+import { DeepCancelled, type DeepClient } from '../workers/deep-client.ts';
+import type { DeepPhaseKind, PageResult, StageKey } from '../workers/protocol.ts';
 import {
   getBlob,
   getDocument,
@@ -23,13 +24,15 @@ import {
 } from './db.ts';
 import { rasterizePdfPage } from './pdf-raster.ts';
 import { withObjectUrl, memText } from './memory.ts';
-import { needsReview, type PageId, type PageRecord, type PageStatus } from './types.ts';
+import { needsReview, type PageId, type PageRecord, type PageStatus, type ReadMode } from './types.ts';
 import { decodeError, reportError, type AppError } from '../runtime/errors.ts';
 import { isDebug, log } from '../runtime/logger.ts';
 
 export type QueueEvent =
-  | { type: 'busy'; pageId: PageId }
+  | { type: 'busy'; pageId: PageId; mode: ReadMode }
   | { type: 'stage'; pageId: PageId; stage: StageKey }
+  /** Deep Read's richer progress (per-region "i of n"), mapped to copy by the UI. */
+  | { type: 'deep-phase'; pageId: PageId; phase: DeepPhaseKind; index?: number; total?: number }
   | { type: 'page'; page: PageRecord }
   | { type: 'error'; pageId: PageId; error: AppError }
   | { type: 'idle' };
@@ -43,12 +46,26 @@ export class ProcessingQueue {
   private readonly discard = new Set<PageId>();
   /** In-flight pages whose row is being deleted — drop the result, write nothing. */
   private readonly removed = new Set<PageId>();
+  /** Per-page read mode (set at enqueue time; cleared when the page finishes). */
+  private readonly pageMode = new Map<PageId, ReadMode>();
   private readonly listeners = new Set<Listener>();
   private running = false;
   private currentPageId: PageId | null = null;
+  private currentMode: ReadMode = 'quick';
+
+  /** Resolves a ready Deep Read worker (consent + ~1.4 GB load happen here, in the
+   *  workspace). Set by the workspace; absent until the user opts into Deep Read. */
+  private deepProvider: (() => Promise<DeepClient>) | null = null;
+  /** The resolved Deep Read client, kept so a cancel can abort its decode. */
+  private deepClient: DeepClient | null = null;
 
   constructor(quick: QuickClient) {
     this.quick = quick;
+  }
+
+  /** Wire the Deep Read worker provider (the workspace owns its lifecycle). */
+  setDeepProvider(fn: () => Promise<DeepClient>): void {
+    this.deepProvider = fn;
   }
 
   subscribe(fn: Listener): () => void {
@@ -64,11 +81,14 @@ export class ProcessingQueue {
     return this.pending.length + (this.currentPageId ? 1 : 0);
   }
 
-  /** Add pages (in order) and start draining if idle. Already-pending ids are skipped. */
-  enqueue(pageIds: PageId[]): void {
+  /** Add pages (in order) and start draining if idle. Already-pending ids are
+   *  skipped. `mode` selects the pipeline; Deep Read pages assume the worker has
+   *  already been readied by the workspace (it enqueues only after load). */
+  enqueue(pageIds: PageId[], mode: ReadMode = 'quick'): void {
     for (const id of pageIds) {
       this.discard.delete(id);
       this.removed.delete(id);
+      this.pageMode.set(id, mode);
       if (id !== this.currentPageId && !this.pending.includes(id)) this.pending.push(id);
     }
     void this.pump();
@@ -80,17 +100,31 @@ export class ProcessingQueue {
     const i = this.pending.indexOf(pageId);
     if (i >= 0) {
       this.pending.splice(i, 1);
+      this.pageMode.delete(pageId);
       void this.transition(pageId, { status: 'cancelled' });
     } else if (this.currentPageId === pageId) {
       this.discard.add(pageId);
+      this.abortCurrentDeep();
     }
   }
 
   /** Drop everything: clear the queue and discard the in-flight page's result. */
   cancelAll(): void {
     const dropped = this.pending.splice(0);
-    if (this.currentPageId) this.discard.add(this.currentPageId);
-    for (const id of dropped) void this.transition(id, { status: 'cancelled' });
+    if (this.currentPageId) {
+      this.discard.add(this.currentPageId);
+      this.abortCurrentDeep();
+    }
+    for (const id of dropped) {
+      this.pageMode.delete(id);
+      void this.transition(id, { status: 'cancelled' });
+    }
+  }
+
+  /** Truly interrupt the in-flight Deep Read decode (Quick Read can't be cut mid
+   *  page — it just gets discarded on completion). No-op for Quick pages. */
+  private abortCurrentDeep(): void {
+    if (this.currentMode === 'deep') this.deepClient?.cancelCurrent();
   }
 
   /** Remove pages from the queue without recording any status (used on doc delete).
@@ -100,7 +134,11 @@ export class ProcessingQueue {
     for (const id of pageIds) {
       const i = this.pending.indexOf(id);
       if (i >= 0) this.pending.splice(i, 1);
-      if (this.currentPageId === id) this.removed.add(id);
+      this.pageMode.delete(id);
+      if (this.currentPageId === id) {
+        this.removed.add(id);
+        this.abortCurrentDeep();
+      }
     }
   }
 
@@ -115,8 +153,10 @@ export class ProcessingQueue {
       let next: PageId | undefined;
       while ((next = this.pending.shift())) {
         this.currentPageId = next;
-        this.emit({ type: 'busy', pageId: next });
+        this.currentMode = this.pageMode.get(next) ?? 'quick';
+        this.emit({ type: 'busy', pageId: next, mode: this.currentMode });
         await this.process(next);
+        this.pageMode.delete(next);
         this.currentPageId = null;
         if (isDebug()) log.debug('page done ·', memText());
       }
@@ -163,9 +203,7 @@ export class ProcessingQueue {
 
       await set({ status: 'processing' });
       const tag = `${doc.name.replace(/\.[^.]+$/, '')}.${page.pageNo}`;
-      const result = await withObjectUrl(imageBlob, (url) =>
-        this.quick.run(tag, url, (stage) => this.emit({ type: 'stage', pageId, stage })),
-      );
+      const result = await this.readPage(pageId, tag, imageBlob, this.pageMode.get(pageId) ?? 'quick');
 
       if (this.removed.has(pageId)) {
         this.removed.delete(pageId);
@@ -180,7 +218,8 @@ export class ProcessingQueue {
       await putResult({
         pageId,
         docId: doc.id,
-        pipeline: 'E',
+        pipeline: result.pipeline,
+        fellBack: result.fellBack,
         markdown: result.markdown,
         uncertainty: result.uncertainty,
         verification: result.verification,
@@ -199,7 +238,8 @@ export class ProcessingQueue {
         this.removed.delete(pageId);
         return;
       }
-      if (this.discard.has(pageId)) {
+      // A Deep Read cancel (Stop / unload) surfaces here — it's not an error.
+      if (err instanceof DeepCancelled || this.discard.has(pageId)) {
         this.discard.delete(pageId);
         await set({ status: 'cancelled' });
         return;
@@ -209,6 +249,30 @@ export class ProcessingQueue {
       await set({ status: 'error', error: appError.userMessage });
       this.emit({ type: 'error', pageId, error: appError });
     }
+  }
+
+  /** Run one page through the chosen pipeline, normalizing to a result that
+   *  carries which pipeline actually produced it (Deep Read may fall back to E). */
+  private async readPage(
+    pageId: PageId,
+    tag: string,
+    imageBlob: Blob,
+    mode: ReadMode,
+  ): Promise<PageResult & { pipeline: 'E' | 'G'; fellBack: boolean }> {
+    if (mode === 'deep') {
+      if (!this.deepProvider) throw new Error('Deep Read is not available');
+      const deep = await this.deepProvider(); // resolves an already-loaded worker
+      this.deepClient = deep;
+      return withObjectUrl(imageBlob, (url) =>
+        deep.run(tag, url, {
+          onPhase: (phase, index, total) => this.emit({ type: 'deep-phase', pageId, phase, index, total }),
+        }),
+      );
+    }
+    const result = await withObjectUrl(imageBlob, (url) =>
+      this.quick.run(tag, url, (stage) => this.emit({ type: 'stage', pageId, stage })),
+    );
+    return { ...result, pipeline: 'E', fellBack: false };
   }
 
   /** Status-only transition used by cancel paths (page may not be loaded). */

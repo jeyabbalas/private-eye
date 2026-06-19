@@ -15,6 +15,13 @@
       // the headers itself). It reloads the page once on the first visit to
       // become cross-origin-isolated. In dev, Vite already sends the headers, so
       // the shim detects isolation and does nothing.
+      //
+      // Force `credentialless` COEP (the shim defaults to require-corp on
+      // Chrome/Firefox): the cross-origin HuggingFace model weights carry no
+      // Cross-Origin-Resource-Policy, so require-corp would block them. With
+      // credentialless they load (without credentials) while isolation — and the
+      // threads wllama needs — stay on. This matches the dev/preview headers.
+      window.coi = { coepCredentialless: () => true };
       if ('serviceWorker' in navigator && window.isSecureContext) {
         const s = document.createElement('script');
         s.src = new URL(import.meta.env.BASE_URL + 'coi-serviceworker.js', location.href).href;

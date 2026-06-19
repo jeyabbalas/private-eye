@@ -46,3 +46,48 @@ export type FromQuickWorker =
   /** Region OCR result: assembled blocks already in PAGE coordinates. */
   | { type: 'region-result'; jobId: number; blocks: Block[] }
   | { type: 'error'; jobId: number | null; error: AppError };
+
+// ---------------------------------------------------------------------------
+// Deep Read (Pipeline G + router) worker
+// ---------------------------------------------------------------------------
+
+/** Coarse Deep Read phases. The runner's raw status strings carry jargon
+ *  ("layout", "anchoring", "Pipeline E"), so the worker maps them to this enum
+ *  and the main thread renders plain detective copy from it. `cross-examining`
+ *  carries the per-region counts for "region i of n". */
+export type DeepPhaseKind =
+  | 'preparing'
+  | 'examining'
+  | 'cross-examining'
+  | 'verifying'
+  | 'fallback'
+  | 'finishing';
+
+/** A Deep Read result: a PageResult plus which pipeline actually produced it and
+ *  whether the safety gate fell back to the exact transcription. */
+export interface DeepResult extends PageResult {
+  /** E = the deterministic fallback fired; G = the AI-assisted read was kept. */
+  pipeline: 'E' | 'G';
+  /** True when Deep Read's verification gate tripped and E was substituted. */
+  fellBack: boolean;
+}
+
+// main -> Deep Read worker
+export type ToDeepWorker =
+  | { type: 'init'; debug: boolean; onnxEp: AppEp; vlmEp: AppEp }
+  /** Download + load the VLM (the ~1.4 GB one-time fetch; cached in OPFS after). */
+  | { type: 'load'; jobId: number }
+  | { type: 'run'; jobId: number; tag: string; imageUrl: string }
+  /** Abort the in-flight decode. Handled OUT OF BAND (not via the serial chain),
+   *  so it interrupts a running job rather than queueing behind it. */
+  | { type: 'cancel'; jobId: number };
+
+// Deep Read worker -> main
+export type FromDeepWorker =
+  | { type: 'loaded'; jobId: number; epNote: string }
+  | { type: 'load-progress'; loaded: number; total: number }
+  | { type: 'phase'; jobId: number; phase: DeepPhaseKind; index?: number; total?: number }
+  | { type: 'result'; jobId: number; result: DeepResult }
+  /** The user cancelled; the in-flight decode was aborted cleanly. */
+  | { type: 'cancelled'; jobId: number }
+  | { type: 'error'; jobId: number | null; error: AppError };

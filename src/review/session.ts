@@ -52,6 +52,8 @@ export class ReviewSession {
   readonly pageId: PageId;
   readonly docId: DocId;
   readonly pipeline: 'E' | 'G';
+  /** True when Deep Read's safety gate fell back to the exact transcription. */
+  readonly fellBack: boolean;
   readonly width: number;
   readonly height: number;
   readonly uncertainty: UncertaintyLayer | undefined;
@@ -71,6 +73,7 @@ export class ReviewSession {
     this.pageId = result.pageId;
     this.docId = result.docId;
     this.pipeline = result.pipeline;
+    this.fellBack = result.fellBack ?? false;
     this.width = result.width;
     this.height = result.height;
     this.uncertainty = result.uncertainty;

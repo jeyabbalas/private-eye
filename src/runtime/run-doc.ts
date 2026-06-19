@@ -15,6 +15,7 @@
  */
 import type { UncertaintyLayer } from '../structure/uncertainty.ts';
 import type { VerificationResult } from '../structure/verify.ts';
+import type { Block, DocModel } from '../structure/blocks.ts';
 import { runE } from './run-e.ts';
 import { runG, type AppEp, type GMode, type GProgress } from './run-g-live.ts';
 
@@ -24,6 +25,9 @@ export interface RoutedResult {
   /** Which pipeline produced `markdown` (G unless V forced the E fallback). */
   pipeline: RoutedPipeline;
   markdown: string;
+  /** The chosen output's document blocks — the review UI renders these
+   *  block-by-block and links each to its provenance (same as Quick Read). */
+  blocks?: Block[];
   /** Uncertainty for the chosen output (undefined only if E returns none). */
   uncertainty?: UncertaintyLayer;
   /** Pipeline V verdict for the chosen output. */
@@ -59,6 +63,7 @@ export async function runDocument(
     return {
       pipeline: 'G',
       markdown: g.markdown,
+      blocks: g.doc.blocks,
       uncertainty: g.uncertainty,
       verification: g.verification,
       note: `G/${gmode} · verdict ${g.verification.verdict} · ${g.note}`,
@@ -72,6 +77,7 @@ export async function runDocument(
   return {
     pipeline: 'E',
     markdown: e.markdown,
+    blocks: (e.debug as { doc?: DocModel } | undefined)?.doc?.blocks,
     uncertainty: e.uncertainty,
     verification: e.verification,
     note: `E fallback (G verdict=fallback: ${g.verification.summary})`,

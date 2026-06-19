@@ -11,7 +11,7 @@ const MAGNIFIER_SVG = `
   <line x1="15.5" y1="15.5" x2="21" y2="21" stroke-linecap="round"></line>
 </svg>`;
 
-function fmtBytes(n: number): string {
+export function fmtBytes(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(0)} MB`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(0)} KB`;

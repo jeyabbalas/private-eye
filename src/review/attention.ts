@@ -44,6 +44,9 @@ export interface AttentionItem {
   detail: string;
   /** Always shown (categorical) vs τ-filtered (graded). */
   graded: boolean;
+  /** For cross-model conflicts: the two candidate readings, so the reviewer can
+   *  one-click accept the scan reading over the AI one (when the scan has one). */
+  conflict?: { ocrReading: string | null; vlmReading: string };
 }
 
 export const CATEGORY_LABEL: Record<AttentionCategory, string> = {
@@ -113,9 +116,10 @@ export function buildAttention(
       title: CATEGORY_LABEL.conflict,
       detail:
         r.ocrReading != null
-          ? `Scan reads “${r.ocrReading}”, AI read “${r.vlmReading}”.`
-          : `AI read “${r.vlmReading}”.`,
+          ? `We used the scan’s “${r.ocrReading}” (the AI read “${r.vlmReading}”).`
+          : `The AI read “${r.vlmReading}”, but the scan didn’t confirm it.`,
       graded: false,
+      conflict: { ocrReading: r.ocrReading, vlmReading: r.vlmReading },
     });
   });
 
@@ -214,6 +218,7 @@ export function buildAttention(
       title: CATEGORY_LABEL['advisory-word'],
       detail: r.ocrReading != null ? `Scan “${r.ocrReading}” vs AI “${r.vlmReading}”.` : `AI read “${r.vlmReading}”.`,
       graded: true,
+      conflict: { ocrReading: r.ocrReading, vlmReading: r.vlmReading },
     });
   });
 

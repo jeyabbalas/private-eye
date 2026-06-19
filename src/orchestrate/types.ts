@@ -14,6 +14,12 @@ export type PageId = string;
 
 export type DocKind = 'image' | 'pdf';
 
+/** Which pipeline a page is read with. Quick = the default deterministic read;
+ *  Deep = the opt-in AI-assisted read (Pipeline G + safety fallback). Chosen at
+ *  enqueue time, not persisted on the page (a reload resumes as Quick — no
+ *  surprise 1.4 GB download); the produced ResultRecord records what actually ran. */
+export type ReadMode = 'quick' | 'deep';
+
 /**
  * Page processing lifecycle:
  *   queued → rasterizing → processing → (needs-review | done)
@@ -73,8 +79,11 @@ export interface PageRecord {
 export interface ResultRecord {
   pageId: PageId;
   docId: DocId;
-  /** E = Quick Read; G = Deep Read (Phase 5). */
+  /** E = Quick Read (or Deep Read's deterministic fallback); G = Deep Read. */
   pipeline: 'E' | 'G';
+  /** True when a Deep Read read fell back to the exact transcription because its
+   *  verification gate tripped — drives the "switched to exact" verdict banner. */
+  fellBack?: boolean;
   markdown: string;
   uncertainty?: UncertaintyLayer;
   verification?: VerificationResult;

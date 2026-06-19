@@ -8,6 +8,7 @@
  * review/correction tooling (overlay, threshold, editing) arrives in Phase 3.
  */
 import { QuickClient } from '../workers/client.ts';
+import { DeepClient } from '../workers/deep-client.ts';
 import { ProcessingQueue, type QueueEvent } from '../orchestrate/queue.ts';
 import { ingestFiles } from '../orchestrate/ingest.ts';
 import {
@@ -29,18 +30,22 @@ import {
   type DocumentRecord,
   type PageId,
   type PageRecord,
+  type ReadMode,
 } from '../orchestrate/types.ts';
 import { ReviewSurface } from '../review/surface.ts';
 import { showErrorModal, showModal } from './modal.ts';
-import { escapeHtml } from './progress.ts';
-import { CASE_CLOSED, stageMessage, WARMING } from './copy.ts';
-import type { StageKey } from '../workers/protocol.ts';
+import { confirmDeepRead, DeepDeclined } from './deep-consent.ts';
+import { escapeHtml, fmtBytes } from './progress.ts';
+import { CASE_CLOSED, deepPhaseMessage, SPECIALIST, stageMessage, WARMING } from './copy.ts';
+import type { DeepPhaseKind, StageKey } from '../workers/protocol.ts';
+import type { Capabilities } from '../runtime/capabilities.ts';
+import { isDebug } from '../runtime/logger.ts';
+import { reportError } from '../runtime/errors.ts';
 
 const ACCEPT = 'image/*,application/pdf,.pdf';
 
 export class Workspace {
   readonly el: HTMLElement;
-  private readonly quick: QuickClient;
   private readonly queue: ProcessingQueue;
 
   private docs: DocumentRecord[] = [];
@@ -61,16 +66,36 @@ export class Workspace {
   private downloadAllBtn: HTMLButtonElement | null = null;
   private stopBtn: HTMLButtonElement | null = null;
 
+  // Deep Read (opt-in)
+  private mode: ReadMode = 'quick';
+  private deep: DeepClient | null = null;
+  private deepState: 'off' | 'loading' | 'ready' = 'off';
+  /** Memoized consent + load, so the toggle and the queue share one gate. */
+  private deepReadyPromise: Promise<DeepClient> | null = null;
+  private deepLoaded = 0;
+  private deepTotal = 0;
+  private readonly modeEls = new Map<ReadMode, HTMLButtonElement>();
+  private unloadBtn: HTMLButtonElement | null = null;
+
   // busy-state animation
   private currentPageId: PageId | null = null;
+  private currentMode: ReadMode = 'quick';
   private currentStage: StageKey = 'loading';
+  private currentDeepPhase: DeepPhaseKind = 'preparing';
+  private currentDeepIndex?: number;
+  private currentDeepTotal?: number;
+  private deepStartedAt = 0;
+  private deepTicker: number | null = null;
   private rotateTimer: number | null = null;
   private tick = 0;
   private errorShownThisBatch = false;
 
-  constructor(quick: QuickClient) {
-    this.quick = quick;
+  constructor(
+    private readonly quick: QuickClient,
+    private readonly caps?: Capabilities,
+  ) {
     this.queue = new ProcessingQueue(quick);
+    this.queue.setDeepProvider(() => this.ensureDeepReady());
     this.queue.subscribe((e) => this.onQueueEvent(e));
 
     this.el = document.createElement('main');
@@ -182,7 +207,135 @@ export class Workspace {
 
     if (newPageIds.length) {
       this.errorShownThisBatch = false;
-      this.queue.enqueue(newPageIds);
+      this.queue.enqueue(newPageIds, this.mode);
+    }
+  }
+
+  // ---------- Deep Read lifecycle ----------
+
+  /** Resolve a ready Deep Read worker — the consent + ~1.4 GB load gate, memoized
+   *  so the mode toggle, the per-page re-read, and the queue all share one load. */
+  private ensureDeepReady(): Promise<DeepClient> {
+    if (this.deep && this.deepState === 'ready') return Promise.resolve(this.deep);
+    if (this.deepReadyPromise) return this.deepReadyPromise;
+    this.deepReadyPromise = this.loadDeep().catch((e) => {
+      this.deepReadyPromise = null; // allow a later retry
+      throw e;
+    });
+    return this.deepReadyPromise;
+  }
+
+  /** Consent (first time) + spawn + download/load the Deep Read model. */
+  private async loadDeep(): Promise<DeepClient> {
+    if (this.deepState === 'off') {
+      const ok = await confirmDeepRead(this.caps);
+      if (!ok) throw new DeepDeclined();
+    }
+    if (!this.deep) {
+      const ep = this.caps?.webgpu ? 'webgpu' : 'wasm';
+      this.deep = new DeepClient({
+        debug: isDebug(),
+        onnxEp: ep,
+        vlmEp: ep,
+        handlers: { onError: (err) => showErrorModal(err) },
+      });
+    }
+    this.deepState = 'loading';
+    this.deepLoaded = 0;
+    this.deepTotal = 0;
+    this.updateModeUI();
+    this.updateStatusBar();
+    try {
+      await this.deep.load({
+        onLoadProgress: (loaded, total) => {
+          this.deepLoaded = loaded;
+          this.deepTotal = total;
+          this.updateStatusBar();
+        },
+      });
+    } catch (e) {
+      // The load may have left the worker dead (a fatal error surfaced via
+      // worker.onerror terminates it). Discard the client so the next attempt
+      // constructs a fresh worker instead of reusing a dead one (which would hang).
+      this.deep?.terminate();
+      this.deep = null;
+      this.deepState = 'off';
+      this.updateModeUI();
+      this.updateStatusBar();
+      throw e;
+    }
+    this.deepState = 'ready';
+    this.updateModeUI();
+    this.updateStatusBar();
+    return this.deep;
+  }
+
+  /** Switch reading depth. Picking Deep runs the load gate first; declining or a
+   *  load failure leaves the app on Quick Read. */
+  private async onSelectMode(mode: ReadMode): Promise<void> {
+    if (mode === this.mode && this.deepState !== 'off') return;
+    if (mode === 'deep') {
+      try {
+        await this.ensureDeepReady();
+      } catch (e) {
+        if (!(e instanceof DeepDeclined)) {
+          showErrorModal(reportError(e, { context: 'deep:load', capabilities: this.caps }));
+        }
+        this.mode = 'quick';
+        this.updateModeUI();
+        return;
+      }
+    }
+    this.mode = mode;
+    this.updateModeUI();
+  }
+
+  /** Reclaim the ~1.4 GB Deep Read model by terminating its worker (idle only). */
+  private unloadDeep(): void {
+    if (this.queue.busy) return;
+    this.deep?.terminate();
+    this.deep = null;
+    this.deepState = 'off';
+    this.deepReadyPromise = null;
+    this.mode = 'quick';
+    this.updateModeUI();
+    this.updateStatusBar();
+  }
+
+  /** Re-read one already-processed page with Deep Read (the review-surface opt-in). */
+  private async readPageDeep(page: PageRecord): Promise<void> {
+    try {
+      await this.ensureDeepReady();
+    } catch (e) {
+      if (!(e instanceof DeepDeclined)) {
+        showErrorModal(reportError(e, { context: 'deep:load', capabilities: this.caps }));
+      }
+      return;
+    }
+    const fresh: PageRecord = { ...page, status: 'queued', error: undefined, updatedAt: Date.now() };
+    await putPage(fresh);
+    this.pageMap.set(page.id, fresh);
+    const arr = this.pagesByDoc.get(page.docId);
+    if (arr) {
+      const i = arr.findIndex((p) => p.id === page.id);
+      if (i >= 0) arr[i] = fresh;
+    }
+    const chip = this.chipEls.get(page.id);
+    if (chip) this.applyChip(chip, fresh);
+    this.updateRollup(page.docId);
+    this.errorShownThisBatch = false;
+    this.queue.enqueue([page.id], 'deep');
+  }
+
+  private startDeepTicker(): void {
+    if (this.deepTicker != null) return;
+    this.deepTicker = window.setInterval(() => this.updateStatusBar(), 1000);
+  }
+
+  private stopDeepTicker(): void {
+    if (this.deepTicker != null) {
+      clearInterval(this.deepTicker);
+      this.deepTicker = null;
     }
   }
 
@@ -251,10 +404,48 @@ export class Workspace {
     this.stopBtn = button('Stop', 'pe-btn', () => this.queue.cancelAll());
     this.stopBtn.hidden = true;
     this.downloadAllBtn = button('Download all (ZIP)', 'pe-btn pe-btn-primary', () => void this.onDownloadAll());
-    actions.append(add, this.stopBtn, this.downloadAllBtn);
+    actions.append(this.buildModeToggle(), add, this.stopBtn, this.downloadAllBtn);
 
     bar.append(status, this.statusBar, actions);
     return bar;
+  }
+
+  /** Reading-depth toggle: Quick (default) vs Deep (opt-in). Picking Deep runs the
+   *  consent + ~1.4 GB load gate; once loaded, an Unload control reclaims it. */
+  private buildModeToggle(): HTMLElement {
+    this.modeEls.clear();
+    const wrap = document.createElement('div');
+    wrap.className = 'pe-mode';
+
+    const seg = document.createElement('div');
+    seg.className = 'pe-mode-seg';
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', 'Reading depth');
+    for (const m of ['quick', 'deep'] as ReadMode[]) {
+      const b = document.createElement('button');
+      b.className = 'pe-mode-opt';
+      b.textContent = m === 'quick' ? 'Quick Read' : 'Deep Read';
+      b.addEventListener('click', () => void this.onSelectMode(m));
+      this.modeEls.set(m, b);
+      seg.appendChild(b);
+    }
+
+    this.unloadBtn = button('Unload', 'pe-mode-unload', () => this.unloadDeep());
+    this.unloadBtn.title = 'Free the Deep Read model from memory (~1.4 GB)';
+    wrap.append(seg, this.unloadBtn);
+    this.updateModeUI();
+    return wrap;
+  }
+
+  private updateModeUI(): void {
+    for (const [m, el] of this.modeEls) {
+      el.classList.toggle('pe-mode-on', m === this.mode);
+      el.disabled = this.deepState === 'loading';
+    }
+    const deepEl = this.modeEls.get('deep');
+    if (deepEl) deepEl.textContent = this.deepState === 'loading' ? 'Deep Read · loading…' : 'Deep Read';
+    // Offer Unload only when the model is resident and nothing is mid-read.
+    if (this.unloadBtn) this.unloadBtn.hidden = !(this.deepState === 'ready' && !this.queue.busy);
   }
 
   private buildDocList(): HTMLElement {
@@ -352,7 +543,7 @@ export class Workspace {
       return;
     }
 
-    const surface = new ReviewSurface(doc, page, this.quick);
+    const surface = new ReviewSurface(doc, page, this.quick, () => void this.readPageDeep(page));
     this.surface = surface;
     v.replaceChildren(surface.el);
     void surface.load().catch((e) => {
@@ -487,13 +678,33 @@ export class Workspace {
     switch (e.type) {
       case 'busy':
         this.currentPageId = e.pageId;
+        this.currentMode = e.mode;
         this.currentStage = 'loading';
-        this.startRotation();
+        this.currentDeepPhase = 'preparing';
+        this.currentDeepIndex = undefined;
+        this.currentDeepTotal = undefined;
+        if (e.mode === 'deep') {
+          this.stopRotation();
+          this.deepStartedAt = performance.now();
+          this.startDeepTicker();
+        } else {
+          this.stopDeepTicker();
+          this.startRotation();
+        }
+        this.updateModeUI();
         this.updateStatusBar();
         break;
       case 'stage':
         if (e.pageId === this.currentPageId) {
           this.currentStage = e.stage;
+          this.updateStatusBar();
+        }
+        break;
+      case 'deep-phase':
+        if (e.pageId === this.currentPageId) {
+          this.currentDeepPhase = e.phase;
+          this.currentDeepIndex = e.index;
+          this.currentDeepTotal = e.total;
           this.updateStatusBar();
         }
         break;
@@ -525,7 +736,9 @@ export class Workspace {
       case 'idle':
         this.currentPageId = null;
         this.stopRotation();
+        this.stopDeepTicker();
         this.errorShownThisBatch = false;
+        this.updateModeUI(); // batch ended → Unload becomes available again
         this.updateStatusBar();
         break;
     }
@@ -575,13 +788,38 @@ export class Workspace {
     if (this.downloadAllBtn) this.downloadAllBtn.disabled = read === 0;
     if (this.stopBtn) this.stopBtn.hidden = !this.queue.busy;
 
+    // The one-time Deep Read model download takes over the status line while it
+    // runs (the queue waits on it). Non-blocking — the rest of the UI stays usable.
+    if (this.deepState === 'loading') {
+      this.statusMain.textContent = SPECIALIST;
+      if (this.deepTotal > 0) {
+        const pct = Math.round((this.deepLoaded / this.deepTotal) * 100);
+        this.statusSub.textContent = `Downloading the Deep Read model — ${fmtBytes(this.deepLoaded)} / ${fmtBytes(this.deepTotal)} (${pct}%), one time. Quick Read still works.`;
+        this.statusBar.classList.remove('indeterminate');
+        this.statusFill.style.width = `${(this.deepLoaded / this.deepTotal) * 100}%`;
+      } else {
+        this.statusSub.textContent = 'Reaching the model library…';
+        this.statusBar.classList.add('indeterminate');
+        this.statusFill.style.width = '';
+      }
+      return;
+    }
+
     if (this.queue.busy && this.currentPageId) {
       const page = this.pageMap.get(this.currentPageId);
       const doc = page && this.docs.find((d) => d.id === page.docId);
-      this.statusMain.textContent = this.ready ? stageMessage(this.currentStage, this.tick) : WARMING;
-      this.statusSub.textContent = page && doc ? `${doc.name} · page ${page.pageNo} · ${read} of ${total} read` : `${read} of ${total} read`;
       this.statusBar.classList.remove('indeterminate');
       this.statusFill.style.width = `${total ? (done / total) * 100 : 0}%`;
+      if (this.currentMode === 'deep') {
+        const secs = Math.max(0, Math.round((performance.now() - this.deepStartedAt) / 1000));
+        this.statusMain.textContent = deepPhaseMessage(this.currentDeepPhase, this.currentDeepIndex, this.currentDeepTotal);
+        this.statusSub.textContent =
+          page && doc ? `${doc.name} · page ${page.pageNo} · ${secs}s · ${read} of ${total} read` : `${secs}s · ${read} of ${total} read`;
+      } else {
+        this.statusMain.textContent = this.ready ? stageMessage(this.currentStage, this.tick) : WARMING;
+        this.statusSub.textContent =
+          page && doc ? `${doc.name} · page ${page.pageNo} · ${read} of ${total} read` : `${read} of ${total} read`;
+      }
     } else {
       this.statusMain.textContent = read > 0 && done === total ? CASE_CLOSED : 'All caught up.';
       this.statusSub.textContent = `${read} of ${total} read`;

@@ -55,6 +55,9 @@ export class ReviewSurface {
     private readonly doc: DocumentRecord,
     private readonly page: PageRecord,
     private readonly quick: QuickClient,
+    /** Opt this page into a Deep Read re-read (wired by the workspace). Null when
+     *  unavailable (e.g. the page is already a Deep Read result). */
+    private readonly onReadDeep: (() => void) | null = null,
   ) {
     this.el = document.createElement('div');
     this.el.className = 'pe-review';
@@ -116,7 +119,7 @@ export class ReviewSurface {
     head.className = 'pe-viewer-head';
     head.textContent = `${this.doc.name} · page ${this.page.pageNo}`;
 
-    const banner = createVerdictBanner(session.verification, session.pipeline, false);
+    const banner = createVerdictBanner(session.verification, session.pipeline, session.fellBack);
 
     this.threshold = createThreshold({
       tau: init.tau,
@@ -137,6 +140,7 @@ export class ReviewSurface {
     this.panel = createAttentionPanel({
       onShow: (item) => this.focusItem(item),
       onDismiss: (item) => session.dismiss(item.id),
+      onUseAiReading: (item) => this.useAiReading(item),
     });
 
     this.editor = createEditor({
@@ -195,6 +199,12 @@ export class ReviewSurface {
       this.drawBtn = button('Mark a missed area', 'pe-btn', () => this.startRegionDraw());
       bar.append(this.drawBtn);
     }
+    // Offer a Deep Read re-read for an exact-transcription result (Quick Read, or
+    // a Deep Read that fell back to it) — the heavier model may resolve tricky
+    // tables/handwriting the quick pass left uncertain.
+    if (this.onReadDeep && session.pipeline === 'E') {
+      bar.append(button('Read with Deep Read', 'pe-btn', () => this.onReadDeep?.()));
+    }
     bar.append(this.savedTag);
     return bar;
   }
@@ -229,6 +239,36 @@ export class ReviewSurface {
   private focusItem(item: AttentionItem): void {
     this.overlay?.focus(item.box);
     if (item.blockIndex != null && item.blockIndex >= 0) this.editor?.focusBlock(baseUid(item.blockIndex));
+  }
+
+  /** Override a cross-model numeric conflict to the AI's reading. Under the 'replace'
+   *  anchor policy the safe scan (OCR) reading is already in the block, so "use the AI
+   *  reading" swaps that applied value back to the VLM's — but only when the scan value
+   *  appears exactly once and isn't embedded in a longer digit run, so we can't change the
+   *  wrong occurrence; otherwise we open the block for a manual fix. Resolving drops the
+   *  conflict from the worklist. */
+  private useAiReading(item: AttentionItem): void {
+    const ocr = item.conflict?.ocrReading;
+    const vlm = item.conflict?.vlmReading;
+    if (!this.session || ocr == null || vlm == null || item.blockIndex == null || item.blockIndex < 0) {
+      this.focusItem(item);
+      return;
+    }
+    const uid = baseUid(item.blockIndex);
+    const block = this.session.state().blocks.find((b) => b.uid === uid);
+    const md = block?.markdown ?? '';
+    const at = md.indexOf(ocr);
+    const before = at > 0 ? md[at - 1]! : '';
+    const after = md[at + ocr.length] ?? '';
+    const swappable = block != null && at >= 0 && at === md.lastIndexOf(ocr) && !/\d/.test(before) && !/\d/.test(after);
+    if (swappable) {
+      this.session.editBlock(uid, md.replace(ocr, vlm));
+      this.session.dismiss(item.id); // resolved → out of the worklist
+      this.flashStatus(`Used the AI’s “${vlm}”.`);
+    } else {
+      this.focusItem(item);
+      this.flashStatus('Opened it for a closer look.');
+    }
   }
 
   // ---------- region draw + on-demand OCR ----------

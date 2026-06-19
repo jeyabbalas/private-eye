@@ -30,7 +30,9 @@ export function getLastError(): unknown {
 
 export const log = {
   debug(...args: unknown[]): void {
-    if (DEBUG) console.debug('[private-eye]', ...args);
+    // console.log, NOT console.debug: Chrome's console hides console.debug (Verbose
+    // level) by default, so ?debug=1 diagnostics would silently never appear.
+    if (DEBUG) console.log('[private-eye]', ...args);
   },
   warn(...args: unknown[]): void {
     if (DEBUG) console.warn('[private-eye]', ...args);

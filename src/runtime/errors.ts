@@ -60,8 +60,32 @@ export interface ErrorEnv {
   context?: string;
 }
 
+/** True for an already-normalized AppError (e.g. one posted out of a worker). */
+export function isAppError(e: unknown): e is AppError {
+  return (
+    typeof e === 'object' &&
+    e !== null &&
+    typeof (e as AppError).kind === 'string' &&
+    typeof (e as AppError).userMessage === 'string' &&
+    typeof (e as AppError).technical === 'string'
+  );
+}
+
 /** Normalize any throwable into an AppError with a copy-pasteable technical block. */
 export function reportError(e: unknown, env: ErrorEnv = {}): AppError {
+  // A worker boundary already normalizes errors with reportError before posting
+  // them, and the main thread catches that AppError *object*. Running it through
+  // reportError again would hit `String(e)` → "[object Object]", throwing away the
+  // real message/stack the worker captured. Pass it through instead, appending any
+  // context the outer (main-thread) caller can add that the worker lacked.
+  if (isAppError(e)) {
+    const extra: string[] = [];
+    if (env.context) extra.push(`outer-context: ${env.context}`);
+    if (env.executionProviders) extra.push(`executionProviders: ${JSON.stringify(env.executionProviders)}`);
+    if (env.capabilities) extra.push(`capabilities: ${safeJson(env.capabilities)}`);
+    return extra.length ? { ...e, technical: `${e.technical}\n${extra.join('\n')}` } : e;
+  }
+
   const isPe = e instanceof PrivateEyeError;
   const kind: AppErrorKind = isPe ? e.kind : 'Unknown';
   const message = e instanceof Error ? e.message : String(e);
