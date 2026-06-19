@@ -16,7 +16,7 @@ export type { CalibrateFn };
 export const identityCalibrate: CalibrateFn = (p) => p;
 
 /** Highlight geometry for a line: prefer the detection quad (true text height)
- *  over the structure-deflated box (PP-OCRv5 compresses box height for layout). */
+ *  over the structure-deflated box (PP-OCR compresses box height for layout). */
 function lineBox(line: OcrLine): BBox {
   return line.quad ? quadToBox(line.quad) : line.box;
 }

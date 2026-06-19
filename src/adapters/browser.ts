@@ -41,7 +41,23 @@ async function decodeImage(src: ImageSource): Promise<RasterImage> {
 }
 
 async function readBytes(src: ImageSource): Promise<Uint8Array> {
-  return new Uint8Array(await (await fetch(src)).arrayBuffer());
+  // Model weights stream from the cross-origin HuggingFace CDN, and the eager
+  // warm-up pulls the layout + OCR weights concurrently (hundreds of MB), so a
+  // single transient blip shouldn't hard-fail the whole load. Bounded retry with
+  // backoff; also treat a non-2xx response as an error so a bad body never reaches
+  // ORT as "model bytes". GETs here are idempotent static assets, safe to retry.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(src);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText} fetching ${src}`);
+      return new Uint8Array(await res.arrayBuffer());
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+    }
+  }
+  throw lastErr;
 }
 
 async function assetSize(rel: string): Promise<number> {

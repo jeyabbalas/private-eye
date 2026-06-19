@@ -4,7 +4,7 @@
  * focus expert attention on the regions/characters the OCR is least sure about.
  *
  * Statistical intent (see docs plan): the ONLY within-model signal we surface is
- * calibrated PP-OCRv5 character confidence (`lines`); everything else is
+ * calibrated PP-OCR character confidence (`lines`); everything else is
  * cross-model agreement — coverage gaps (OCR text outside any layout region) and
  * numeric disagreement (VLM vs OCR, Pipeline G). We deliberately do NOT surface:
  *   - raw PP-DocLayoutV3 region scores (miscalibrated; silent on missed regions),

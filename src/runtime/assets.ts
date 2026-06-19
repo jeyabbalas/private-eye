@@ -30,7 +30,15 @@ const hf = (repo: string, file: string): string => `https://huggingface.co/${rep
 const MODEL_CDN: Record<string, string> = {
   // Layout: the patched graph is vendored; its 130 MB external weights are remote.
   'layout/doclayoutv3/PP-DocLayoutV3.onnx.data': hf('Bei0001/PP-DocLayoutV3-ONNX', 'PP-DocLayoutV3.onnx.data'),
-  // PP-OCRv5 detector + recognizer (English).
+  // PP-OCRv6 detector + recognizer (unified multilingual rec), keyed by tier.
+  // medium is the app default (PPOCR_DEFAULTS.tier in src/engines/ppocr/index.ts);
+  // add tiny/small entries here if you switch the default tier.
+  'ppocr/det-medium/inference.onnx': hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.onnx'),
+  'ppocr/det-medium/inference.yml': hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.yml'),
+  'ppocr/rec-medium/inference.onnx': hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.onnx'),
+  'ppocr/rec-medium/inference.yml': hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.yml'),
+  // PP-OCRv5 detector + recognizer (English) — legacy, kept only so the verification
+  // harness can A/B v5↔v6 (scripts/ocr-harness.ts --compare). Remove once v6 is confirmed.
   'ppocr/det-mobile/inference.onnx': hf('PaddlePaddle/PP-OCRv5_mobile_det_onnx', 'inference.onnx'),
   'ppocr/det-mobile/inference.yml': hf('PaddlePaddle/PP-OCRv5_mobile_det_onnx', 'inference.yml'),
   'ppocr/rec-en-mobile/inference.onnx': hf('PaddlePaddle/en_PP-OCRv5_mobile_rec_onnx', 'inference.onnx'),

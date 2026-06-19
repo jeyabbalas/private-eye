@@ -1,8 +1,11 @@
 /**
- * PP-OCRv5 ONNX runner: DB text detection + CTC recognition, faithful to
+ * PP-OCRv6 ONNX runner: DB text detection + CTC recognition, faithful to
  * PaddleOCR's predict_det/predict_rec preprocessing (reference: PaddleOCR
- * python + gutenye/ocr). Browser-portable: all I/O goes through RuntimeContext,
- * all pixel work through src/core/imageops.
+ * python + gutenye/ocr). det+rec are downloaded as a tier-matched pair
+ * (tiny/small/medium); the recognition charset and the DB thresholds are read
+ * from each model's inference.yml, so the engine tracks whatever tier/version is
+ * loaded. Browser-portable: all I/O goes through RuntimeContext, all pixel work
+ * through src/core/imageops.
  */
 import { load } from 'js-yaml';
 import { Tensor, type InferenceSession } from 'onnxruntime-common';
@@ -10,12 +13,20 @@ import type { BBox, LineConfAgg, OcrLine, OcrResult, OcrWord, Quad, RasterImage 
 import { quadToBox } from '../../core/types.ts';
 import { geoMean, quantile } from '../../core/stats.ts';
 import { normalizeToCHW, resizeBilinear, rotate90ccw, warpQuad } from '../../core/imageops.ts';
-import type { RuntimeContext } from '../../adapters/types.ts';
-import { dbPostprocess } from './db.ts';
+import type { ModelSpec, RuntimeContext } from '../../adapters/types.ts';
+import { DB_DEFAULTS, dbPostprocess, type DbParams } from './db.ts';
 import { buildCharset, ctcGreedyDecode } from './ctc.ts';
 
+/** PP-OCRv6 model tier: tiny (≈6 MB) / small (≈30 MB) / medium (≈132 MB). det and
+ *  rec are downloaded as a tier-matched pair. */
+export type PpocrTier = 'tiny' | 'small' | 'medium';
+
 export interface PpocrOptions {
-  det: 'mobile' | 'server';
+  tier: PpocrTier;
+  /** Advanced/eval override: explicit det+rec model + yml paths, bypassing the
+   *  tier-derived defaults. The app never sets this; the verification harness uses
+   *  it to A/B alternate model sets (e.g. legacy PP-OCRv5). */
+  modelPaths?: PpocrModelPaths;
   detLimit: number; // long-side target for detection input (yml default 960)
   dropScore: number; // drop lines with rec confidence below this (PaddleOCR system default 0.5)
   recBatch: number;
@@ -28,7 +39,7 @@ export interface PpocrOptions {
   geomDeflateY: number;
 }
 
-export const PPOCR_DEFAULTS: PpocrOptions = { det: 'mobile', detLimit: 960, dropScore: 0.5, recBatch: 8, geomDeflateY: 0.6 };
+export const PPOCR_DEFAULTS: PpocrOptions = { tier: 'medium', detLimit: 960, dropScore: 0.5, recBatch: 8, geomDeflateY: 0.6 };
 
 const REC_H = 48;
 const REC_BASE_W = 320;
@@ -46,31 +57,86 @@ function lineConfAgg(charConf: number[]): LineConfAgg {
   };
 }
 
-export function detModelSpec(det: 'mobile' | 'server') {
-  return { id: `ppocr-det-${det}`, url: `ppocr/det-${det}/inference.onnx` };
+export function detModelSpec(tier: PpocrTier): ModelSpec {
+  return { id: `ppocr-det-${tier}`, url: `ppocr/det-${tier}/inference.onnx` };
 }
-export const REC_MODEL_SPEC = { id: 'ppocr-rec-en-mobile', url: 'ppocr/rec-en-mobile/inference.onnx' };
-const REC_YML = 'ppocr/rec-en-mobile/inference.yml';
+export function recModelSpec(tier: PpocrTier): ModelSpec {
+  return { id: `ppocr-rec-${tier}`, url: `ppocr/rec-${tier}/inference.onnx` };
+}
+const detYmlPath = (tier: PpocrTier): string => `ppocr/det-${tier}/inference.yml`;
+const recYmlPath = (tier: PpocrTier): string => `ppocr/rec-${tier}/inference.yml`;
+
+export interface PpocrModelPaths {
+  det: ModelSpec;
+  rec: ModelSpec;
+  detYml: string;
+  recYml: string;
+}
+/** The tier-matched det+rec model + yml paths (the production default). The eval
+ *  harness passes an explicit override (PpocrOptions.modelPaths) to A/B other model
+ *  sets, e.g. legacy PP-OCRv5 (det-mobile + en rec). */
+export function tierModelPaths(tier: PpocrTier): PpocrModelPaths {
+  return { det: detModelSpec(tier), rec: recModelSpec(tier), detYml: detYmlPath(tier), recYml: recYmlPath(tier) };
+}
 
 export class PpocrEngine {
   readonly id = 'ppocr';
   private det?: InferenceSession;
   private rec?: InferenceSession;
+  private dict: string[] = [];
   private charset: string[] = [];
+  private dbParams: Partial<DbParams> = DB_DEFAULTS;
   private opts: PpocrOptions = PPOCR_DEFAULTS;
 
   async init(ctx: RuntimeContext, opts: Partial<PpocrOptions> = {}): Promise<void> {
     this.opts = { ...PPOCR_DEFAULTS, ...opts };
-    const [det, rec, ymlBytes] = await Promise.all([
-      ctx.createSession(detModelSpec(this.opts.det)),
-      ctx.createSession(REC_MODEL_SPEC),
-      ctx.readBytes(ctx.assetUrl(REC_YML)),
+    const paths = this.opts.modelPaths ?? tierModelPaths(this.opts.tier);
+    const [det, rec, recYmlBytes, detYmlBytes] = await Promise.all([
+      ctx.createSession(paths.det),
+      ctx.createSession(paths.rec),
+      ctx.readBytes(ctx.assetUrl(paths.recYml)),
+      ctx.readBytes(ctx.assetUrl(paths.detYml)),
     ]);
     this.det = det;
     this.rec = rec;
-    const yml = load(new TextDecoder().decode(ymlBytes)) as { PostProcess: { character_dict: string[] } };
-    // Output dim C=438 vs 436 dict entries → blank + dict + space (use_space_char).
-    this.charset = buildCharset(yml.PostProcess.character_dict, true);
+
+    // Recognition charset from the rec yml. PaddleOCR's CTCLabelDecode prepends a
+    // blank (index 0) and appends a space when use_space_char; default it on (all
+    // PP-OCR document recognizers use it) and reconcile against the model's true
+    // output dim C on the first batch (reconcileCharset), so a wrong yml hint can
+    // never shift glyph indices. v6 rec is a unified multilingual model: the dict
+    // is ~18.7k entries (medium/small) vs v5-en's 436 — but it loads the same way.
+    const recYml = load(new TextDecoder().decode(recYmlBytes)) as {
+      PostProcess: { character_dict: string[]; use_space_char?: boolean };
+    };
+    this.dict = recYml.PostProcess.character_dict;
+    this.charset = buildCharset(this.dict, recYml.PostProcess.use_space_char ?? true);
+
+    // DB postprocess thresholds differ across versions (v6 det: 0.2 / 0.45 / 1.4
+    // vs v5: 0.3 / 0.6 / 1.5). Read them from the det yml so detection tracks the
+    // loaded model; fall back to DB_DEFAULTS per field (minSize isn't in the yml).
+    const detYml = load(new TextDecoder().decode(detYmlBytes)) as {
+      PostProcess?: { thresh?: number; box_thresh?: number; unclip_ratio?: number; max_candidates?: number };
+    };
+    const dp = detYml.PostProcess ?? {};
+    this.dbParams = {
+      thresh: dp.thresh ?? DB_DEFAULTS.thresh,
+      boxThresh: dp.box_thresh ?? DB_DEFAULTS.boxThresh,
+      unclipRatio: dp.unclip_ratio ?? DB_DEFAULTS.unclipRatio,
+      maxCandidates: dp.max_candidates ?? DB_DEFAULTS.maxCandidates,
+      minSize: DB_DEFAULTS.minSize,
+    };
+  }
+
+  /** The rec model's output dim C is ground truth for whether the charset includes
+   *  a trailing space. Rebuild to match C if the yml's use_space_char hint
+   *  disagreed — a length mismatch would shift every glyph index and corrupt the
+   *  whole line. Effectively runs once (charset.length === C thereafter). */
+  private reconcileCharset(C: number): void {
+    const n = this.dict.length;
+    if (C === n + 2) this.charset = buildCharset(this.dict, true);
+    else if (C === n + 1) this.charset = buildCharset(this.dict, false);
+    else console.warn(`[ppocr] rec output dim C=${C} != dict(${n})+blank(+space); charset may be misaligned`);
   }
 
   /** Detect text quads on the full image (original coordinates). */
@@ -85,7 +151,7 @@ export class PpocrEngine {
     const input = normalizeToCHW(resized, { mean: DET_MEAN, std: DET_STD, scale: 1 / 255, bgr: true });
     const out = await det.run({ [det.inputNames[0]!]: new Tensor('float32', input, [1, 3, rh, rw]) });
     const prob = out[det.outputNames[0]!]!.data as Float32Array;
-    return dbPostprocess(prob, rw, rh, w, h).map((b) => b.quad);
+    return dbPostprocess(prob, rw, rh, w, h, this.dbParams).map((b) => b.quad);
   }
 
   /** Perspective-crop a quad; rotate tall crops upright (PaddleOCR convention). */
@@ -126,6 +192,7 @@ export class PpocrEngine {
       const out = await rec.run({ [rec.inputNames[0]!]: new Tensor('float32', data, [batch.length, 3, REC_H, imgW]) });
       const t = out[rec.outputNames[0]!]!;
       const [, T, C] = t.dims as [number, number, number];
+      if (this.charset.length !== C) this.reconcileCharset(C);
       const probs = t.data as Float32Array;
       batch.forEach((cropIdx, bi) => {
         results[cropIdx] = ctcGreedyDecode(probs.subarray(bi * T * C, (bi + 1) * T * C), T, C, this.charset);

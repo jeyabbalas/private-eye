@@ -40,8 +40,8 @@ export interface OcrWord {
 export interface OcrLine {
   text: string;
   box: BBox;
-  conf: number; // 0..1 (PP-OCRv5: arithmetic mean of kept-timestep softmax — unchanged for drop-score parity)
-  /** Per-character confidence aligned to `text` (PP-OCRv5 CTC); absent for engines that don't provide it. */
+  conf: number; // 0..1 (PP-OCR: arithmetic mean of kept-timestep softmax — unchanged for drop-score parity)
+  /** Per-character confidence aligned to `text` (PP-OCR CTC); absent for engines that don't provide it. */
   charConf?: number[];
   /** Aggregations of charConf for the uncertainty layer (geometric mean / min / p10). */
   confAgg?: LineConfAgg;

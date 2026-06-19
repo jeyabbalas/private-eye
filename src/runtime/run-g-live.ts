@@ -16,7 +16,7 @@ import { createBrowserContext } from '../adapters/browser.ts';
 import type { ModelSpec } from '../adapters/types.ts';
 import type { RasterImage } from '../core/types.ts';
 import { LAYOUT_MODEL_SPEC, LayoutEngine } from '../engines/layout/index.ts';
-import { PPOCR_DEFAULTS, PpocrEngine, REC_MODEL_SPEC, detModelSpec } from '../engines/ppocr/index.ts';
+import { PPOCR_DEFAULTS, PpocrEngine, detModelSpec, recModelSpec } from '../engines/ppocr/index.ts';
 import { renderMarkdown, type DocModel } from '../structure/blocks.ts';
 import { buildDocFromReplay, type GAssembleStats, type GMode } from '../structure/vlmregion/assemble.ts';
 import type { UncertaintyLayer } from '../structure/uncertainty.ts';
@@ -49,7 +49,7 @@ interface ModelFileSpec {
 /** Per-region decode deadline (the eval harness --max-time default). */
 const MAX_TIME_S = 300;
 /** Verbatim from the eval harness VLM probe EXPORT_OPTS — keep in sync. */
-const EXPORT_OPTS = { layoutThresh: 0.5, det: 'mobile', detLimit: 960, dropScore: 0.5, geomDeflateY: 0.6, padPx: 8, minPx: 16 } as const;
+const EXPORT_OPTS = { layoutThresh: 0.5, tier: PPOCR_DEFAULTS.tier, detLimit: 960, dropScore: 0.5, geomDeflateY: 0.6, padPx: 8, minPx: 16 } as const;
 
 const cfg = vlmPromptConfig('glm-ocr-q8'); // prefix-resolved: glm-ocr prompts, promptRev glm-g1
 
@@ -191,7 +191,7 @@ async function ensureLiveEngines(onStatus: (s: string) => void, ep: AppEp): Prom
   const ocr = new PpocrEngine();
   await Promise.all([layout.init(ctx, { layoutThresh: EXPORT_OPTS.layoutThresh }), ocr.init(ctx, { ...PPOCR_DEFAULTS })]);
   let engineBytes = 0;
-  const engineSpecs: ModelSpec[] = [LAYOUT_MODEL_SPEC, detModelSpec('mobile'), REC_MODEL_SPEC];
+  const engineSpecs: ModelSpec[] = [LAYOUT_MODEL_SPEC, detModelSpec(PPOCR_DEFAULTS.tier), recModelSpec(PPOCR_DEFAULTS.tier)];
   for (const m of engineSpecs) {
     engineBytes += await ctx.assetSize(m.url).catch(() => 0);
     for (const ext of m.externalData ?? []) engineBytes += await ctx.assetSize(ext).catch(() => 0);

@@ -1,5 +1,5 @@
 /**
- * Runtime loader for the PP-OCRv5 confidence calibration artifact produced by
+ * Runtime loader for the PP-OCR confidence calibration artifact produced by
  * scripts/calibrate-uncertainty.ts. Maps raw CTC max-softmax → calibrated
  * P(correct) via an isotonic (piecewise-linear) map, char-class-aware (digits use
  * a separate map — numeric error structure differs and digits are safety-critical).

@@ -66,9 +66,9 @@ function makeCtx(ep: AppEp) {
 export async function ensureE(onStatus: (s: string) => void, ep: AppEp = 'webgpu'): Promise<InitStats> {
   if (pipe && initStats && loadedEp === ep) return initStats;
   if (pipe) await disposeE();
-  onStatus(`loading E models (~155 MB: layout + det + rec + slanet) on ${ep}…`);
+  onStatus(`loading E models (~270 MB: layout + det + rec + slanet) on ${ep}…`);
   ctx = makeCtx(ep);
-  const p = createPipeline('ppstructure'); // defaults: det=mobile, order=learned, table=slanet
+  const p = createPipeline('ppstructure'); // defaults: tier=medium, order=learned, table=slanet
   initStats = await p.init(ctx);
   pipe = p;
   loadedEp = ep;

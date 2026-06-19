@@ -7,7 +7,7 @@
  * Messages are drained strictly one-at-a-time (a promise chain) so eager warm-up
  * can't race a run into a double model-load, and pages process sequentially.
  */
-import { setDebug } from '../runtime/logger.ts';
+import { log, setDebug } from '../runtime/logger.ts';
 import { ensureE, runE, reocrRegion, eEpNote, type AppEp } from '../runtime/run-e.ts';
 import { reportError } from '../runtime/errors.ts';
 import type { DocModel } from '../structure/blocks.ts';
@@ -74,6 +74,15 @@ async function handle(msg: ToQuickWorker): Promise<void> {
       }
     }
   } catch (err) {
+    // Warm-up is a best-effort preload: a transient failure (e.g. a CDN blip while
+    // it pulls layout + OCR weights concurrently) must NOT surface a hard error
+    // modal — the next run re-runs ensureE and reports any genuinely persistent
+    // failure with actionable context. (readBytes already retries transient
+    // fetches; this swallows the longer-blip tail so a working app never modals.)
+    if (msg.type === 'warm') {
+      log.warn('[quick] warm-up failed (will load on first run):', err);
+      return;
+    }
     const jobId = msg.type === 'run' || msg.type === 'reocr-region' ? msg.jobId : null;
     post({ type: 'error', jobId, error: reportError(err, { context: `quick-worker:${msg.type}`, executionProviders: { onnxEp } }) });
   }

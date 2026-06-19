@@ -1,12 +1,12 @@
 /**
  * Pipeline E ("ppstructure"): PP-DocLayoutV3 layout (regions + learned reading
- * order) → PP-OCRv5 det+rec (full page, identical to Pipeline B) → SLANet_plus
+ * order) → PP-OCRv6 det+rec (full page, identical to Pipeline B) → SLANet_plus
  * for confirmed table regions → thin region assembly → Markdown.
  *
  * Zero generative components: every emitted token is an OCR token, so B's
  * no-fabrication-by-construction safety class is preserved.
  */
-import { PpocrEngine, PPOCR_DEFAULTS, detModelSpec, REC_MODEL_SPEC, type PpocrOptions } from '../engines/ppocr/index.ts';
+import { PpocrEngine, PPOCR_DEFAULTS, detModelSpec, recModelSpec, type PpocrOptions, type PpocrTier } from '../engines/ppocr/index.ts';
 import { loadCalibration, identityCalibrator, type Calibrator } from '../engines/ppocr/calibration.ts';
 import { LayoutEngine, LAYOUT_MODEL_SPEC } from '../engines/layout/index.ts';
 import { SlanetEngine, SLANET_MODEL_SPEC } from '../engines/slanet/index.ts';
@@ -34,10 +34,12 @@ export const PPSTRUCTURE_DEFAULTS: PpstructureOptions = {
   layoutThresh: 0.5,
 };
 
+const isTier = (s: string | undefined): s is PpocrTier => s === 'tiny' || s === 'small' || s === 'medium';
+
 export function createPpstructurePipeline(options: Record<string, string> = {}): PipelineAdapter {
   const opts: PpstructureOptions = {
     ...PPSTRUCTURE_DEFAULTS,
-    ...(options.det === 'server' ? { det: 'server' as const } : {}),
+    ...(isTier(options.tier) ? { tier: options.tier } : {}),
     ...(options.detLimit ? { detLimit: Number(options.detLimit) } : {}),
     ...(options.dropScore ? { dropScore: Number(options.dropScore) } : {}),
     ...(options.geomDeflateY ? { geomDeflateY: Number(options.geomDeflateY) } : {}),
@@ -51,14 +53,14 @@ export function createPpstructurePipeline(options: Record<string, string> = {}):
   let calibrator: Calibrator = identityCalibrator;
   const models: ModelSpec[] = [
     LAYOUT_MODEL_SPEC,
-    detModelSpec(opts.det),
-    REC_MODEL_SPEC,
+    detModelSpec(opts.tier),
+    recModelSpec(opts.tier),
     ...(slanet ? [SLANET_MODEL_SPEC] : []),
   ];
 
   return {
     id: 'ppstructure',
-    variant: `det-${opts.det}@${opts.detLimit}+${opts.table}+${opts.order}`,
+    variant: `${opts.tier}@${opts.detLimit}+${opts.table}+${opts.order}`,
     models,
 
     async init(ctx: RuntimeContext) {

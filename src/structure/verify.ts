@@ -121,7 +121,7 @@ function flagsFrom(
 
 /**
  * Verify a page's output against the OCR it was built from. `ocr` is whatever
- * reference the pipeline already has (E: PP-OCRv5 full page; G: the exported
+ * reference the pipeline already has (E: PP-OCRv6 full page; G: the exported
  * region+orphan lines) — V adds no OCR pass. `uncertainty` is consulted only to
  * skip numerics Pipeline G's anchor already flagged (uncertainty.reviewItems),
  * so they are surfaced once, not twice.

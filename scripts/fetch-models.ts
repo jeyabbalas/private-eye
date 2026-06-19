@@ -4,7 +4,7 @@
  * with measured byte sizes + sha256, then patches the layout graph for WebGPU
  * (ensurePatchedLayoutModel). Run once after install:  npm run fetch-models
  *
- *   E: PP-DocLayoutV3 (layout) + PP-OCRv5 det-mobile/rec (OCR) + SLANet_plus (tables)
+ *   E: PP-DocLayoutV3 (layout) + PP-OCRv6 det/rec (medium) (OCR) + SLANet_plus (tables)
  *   G: the above prefix + GLM-OCR Q8_0 GGUF pair (the per-region doc-VLM)
  *
  * All weights are fetched from HuggingFace and served same-origin by the app
@@ -36,6 +36,26 @@ interface ModelGroup {
 const hf = (repo: string, file: string) => `https://huggingface.co/${repo}/resolve/main/${file}`;
 
 const GROUPS: ModelGroup[] = [
+  {
+    id: 'ppocr-det-medium',
+    license: 'Apache-2.0',
+    source: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx',
+    files: [
+      { url: hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.onnx'), dest: 'ppocr/det-medium/inference.onnx' },
+      { url: hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.yml'), dest: 'ppocr/det-medium/inference.yml' },
+    ],
+  },
+  {
+    id: 'ppocr-rec-medium',
+    license: 'Apache-2.0',
+    source: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx',
+    files: [
+      { url: hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.onnx'), dest: 'ppocr/rec-medium/inference.onnx' },
+      { url: hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.yml'), dest: 'ppocr/rec-medium/inference.yml' },
+    ],
+  },
+  // Legacy PP-OCRv5 (mobile det + English rec) — kept only for the verification
+  // harness A/B (scripts/ocr-harness.ts --compare). Remove once v6 is confirmed.
   {
     id: 'ppocr-det-mobile',
     license: 'Apache-2.0',

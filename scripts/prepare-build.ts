@@ -7,7 +7,7 @@
  *   - memory-patched wllama       -> public/wllama-patched/
  *   - patched layout graph + yml  -> public/models/layout/doclayoutv3/
  *
- * Large model WEIGHTS (PP-OCRv5 det/rec, SLANet, the 130 MB layout .onnx.data,
+ * Large model WEIGHTS (PP-OCRv6 det/rec, SLANet, the 130 MB layout .onnx.data,
  * and the 1.43 GB GLM-OCR GGUF) are NOT vendored — they download at runtime
  * from the HuggingFace CDN (src/runtime/assets.ts). Only public weights are
  * fetched inbound; no user document ever leaves the browser.
