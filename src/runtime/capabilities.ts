@@ -14,6 +14,8 @@ export interface Capabilities {
   cores: number;
   /** OPFS available (for caching the Deep Read GGUF). */
   opfs: boolean;
+  /** CacheStorage available (for persisting the Quick Read ONNX weights). */
+  cacheStorage: boolean;
   /** Secure context (HTTPS) — prerequisite for OPFS + service worker. */
   secureContext: boolean;
 }
@@ -38,6 +40,7 @@ export async function detectCapabilities(): Promise<Capabilities> {
     deviceMemoryGb: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
     cores: navigator.hardwareConcurrency || 4,
     opfs,
+    cacheStorage: typeof caches !== 'undefined',
     secureContext: typeof self !== 'undefined' && !!self.isSecureContext,
   };
 }

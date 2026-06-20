@@ -1,6 +1,7 @@
 import './app.css';
 import { buildHeader, logoUrl } from './header.ts';
 import { detectCapabilities } from '../runtime/capabilities.ts';
+import { prepareModelCache } from '../runtime/model-cache.ts';
 import { isDebug, log } from '../runtime/logger.ts';
 import { QuickClient } from '../workers/client.ts';
 import { Workspace } from './workspace.ts';
@@ -23,6 +24,10 @@ async function boot(): Promise<void> {
 
   window.addEventListener('error', (e) => log.error(e.error ?? e.message));
   window.addEventListener('unhandledrejection', (e) => log.error(e.reason));
+
+  // Best-effort: request durable storage and drop any stale-version model cache before
+  // the eager Quick Read warm-up below begins populating CacheStorage with HF weights.
+  void prepareModelCache();
 
   const caps = await detectCapabilities().catch((e) => {
     log.error(e);

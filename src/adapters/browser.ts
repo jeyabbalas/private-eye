@@ -10,6 +10,7 @@ import type { InferenceSession } from 'onnxruntime-common';
 import type { RasterImage } from '../core/types.ts';
 import type { ExecutionProvider, ImageSource, ModelSpec, OrtSessionOpts, RuntimeContext } from './types.ts';
 import { modelUrl, ORT_WASM_DIR } from '../runtime/assets.ts';
+import { cachedModelBytes, isRemote } from '../runtime/model-cache.ts';
 
 // onnxruntime-web WASM runtime files are vendored same-origin (public/ort/).
 // Quick Read runs primarily on WebGPU; the WASM fallback stays single-threaded
@@ -40,7 +41,7 @@ async function decodeImage(src: ImageSource): Promise<RasterImage> {
   return { data: img.data, width: img.width, height: img.height };
 }
 
-async function readBytes(src: ImageSource): Promise<Uint8Array> {
+async function fetchBytesWithRetry(src: ImageSource, init?: RequestInit): Promise<Uint8Array> {
   // Model weights stream from the cross-origin HuggingFace CDN, and the eager
   // warm-up pulls the layout + OCR weights concurrently (hundreds of MB), so a
   // single transient blip shouldn't hard-fail the whole load. Bounded retry with
@@ -49,7 +50,7 @@ async function readBytes(src: ImageSource): Promise<Uint8Array> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(src);
+      const res = await fetch(src, init);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText} fetching ${src}`);
       return new Uint8Array(await res.arrayBuffer());
     } catch (err) {
@@ -58,6 +59,15 @@ async function readBytes(src: ImageSource): Promise<Uint8Array> {
     }
   }
   throw lastErr;
+}
+
+async function readBytes(src: ImageSource): Promise<Uint8Array> {
+  // Cross-origin weights (the HF CDN) get a durable CacheStorage copy so a returning
+  // user doesn't re-stream the ~275 MB Quick Read set; same-origin vendored assets are
+  // small and ride the normal HTTP cache. cachedModelBytes falls back to a plain fetch
+  // wherever CacheStorage is unavailable, so this never blocks a load.
+  if (isRemote(src)) return cachedModelBytes(src, fetchBytesWithRetry);
+  return fetchBytesWithRetry(src);
 }
 
 async function assetSize(rel: string): Promise<number> {
