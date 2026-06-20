@@ -83,6 +83,7 @@ export class Workspace {
   private readonly thumbUrls = new Map<PageId, string>();
   private readonly thumbPending = new Set<PageId>();
   private thumbObserver: IntersectionObserver | null = null;
+  private carnavRO: ResizeObserver | null = null;
 
   // Deep Read (opt-in, per-page)
   private deep: DeepClient | null = null;
@@ -426,6 +427,12 @@ export class Workspace {
     const scroller = document.createElement('div');
     scroller.className = 'pe-carousel';
     this.carouselEl = scroller;
+    // One shared observer keeps every group's page-nav (edge fades + chevrons) in
+    // sync; reset it on each rebuild so we never observe detached tile strips.
+    this.carnavRO?.disconnect();
+    this.carnavRO = new ResizeObserver((entries) => {
+      for (const e of entries) this.syncCarnav(e.target as HTMLElement);
+    });
     for (const doc of this.docs) scroller.appendChild(this.buildDocGroup(doc));
     const add = button('+', 'pe-tile-add', () => this.pickFiles());
     add.title = 'Add more images or PDFs';
@@ -464,13 +471,37 @@ export class Workspace {
     rm.innerHTML = ICON_TRASH;
     actions.append(dl, rm);
 
-    head.append(titles, actions);
+    const pages = this.pagesByDoc.get(doc.id) ?? [];
+    if (pages.length > 1) {
+      const count = document.createElement('div');
+      count.className = 'pe-cargroup-count';
+      count.textContent = `${pages.length} pages`;
+      head.append(titles, count, actions);
+    } else {
+      head.append(titles, actions);
+    }
 
     const tiles = document.createElement('div');
     tiles.className = 'pe-cartiles';
-    for (const page of this.pagesByDoc.get(doc.id) ?? []) tiles.appendChild(this.buildTile(page));
+    for (const page of pages) tiles.appendChild(this.buildTile(page));
 
-    group.append(head, tiles);
+    // Wrap the fixed-width tile strip with hover-revealed page-nav chevrons. The
+    // chevrons are siblings of the strip so syncCarnav can reach them via DOM order.
+    const wrap = document.createElement('div');
+    wrap.className = 'pe-cartiles-wrap';
+    const prev = button('', 'pe-carnav pe-carnav-prev', () => this.pageTiles(tiles, -1));
+    prev.setAttribute('aria-label', 'Previous pages');
+    prev.tabIndex = -1;
+    prev.innerHTML = ICON_CHEVRON_LEFT;
+    const next = button('', 'pe-carnav pe-carnav-next', () => this.pageTiles(tiles, 1));
+    next.setAttribute('aria-label', 'Next pages');
+    next.tabIndex = -1;
+    next.innerHTML = ICON_CHEVRON_RIGHT;
+    wrap.append(prev, tiles, next);
+    tiles.addEventListener('scroll', () => this.syncCarnav(tiles), { passive: true });
+    this.carnavRO?.observe(tiles);
+
+    group.append(head, wrap);
     this.updateRollup(doc.id);
     return group;
   }
@@ -510,6 +541,30 @@ export class Workspace {
     const dot = tile.querySelector<HTMLElement>('.pe-tile-dot');
     if (dot) dot.innerHTML = busy ? '<span class="pe-spin pe-spin-sm"></span>' : '';
     tile.title = `Page ${page.pageNo} — ${TILE_TITLE[page.status]}`;
+  }
+
+  /** Advance the page filmstrip by ~one viewport, keeping a tile of overlap for
+   *  context. The strip is overflow:hidden and only ever moves here — never via a
+   *  scrollbar — so it can't fight the carousel's own horizontal scroll. */
+  private pageTiles(tiles: HTMLElement, dir: 1 | -1): void {
+    const step = Math.max(tiles.clientWidth - 68, 120);
+    tiles.scrollBy({ left: dir * step, behavior: 'smooth' });
+  }
+
+  /** Reflect scroll position onto the edge fades and chevron visibility. Driven by
+   *  the strip's scroll events and the ResizeObserver (which also fires once on
+   *  observe, supplying the initial state). */
+  private syncCarnav(tiles: HTMLElement): void {
+    const prev = tiles.previousElementSibling as HTMLElement | null;
+    const next = tiles.nextElementSibling as HTMLElement | null;
+    const max = tiles.scrollWidth - tiles.clientWidth;
+    const overflowing = max > 1;
+    const atStart = tiles.scrollLeft <= 1;
+    const atEnd = tiles.scrollLeft >= max - 1;
+    tiles.style.setProperty('--fade-l', !overflowing || atStart ? '0px' : '18px');
+    tiles.style.setProperty('--fade-r', !overflowing || atEnd ? '0px' : '22px');
+    if (prev) prev.hidden = !overflowing || atStart;
+    if (next) next.hidden = !overflowing || atEnd;
   }
 
   private buildReviewHost(): HTMLElement {
@@ -961,3 +1016,5 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
 
 const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 4 5-4"/><path d="M5 21h14"/></svg>`;
 const ICON_TRASH = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M7 7l1 13h8l1-13"/></svg>`;
+const ICON_CHEVRON_LEFT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`;
+const ICON_CHEVRON_RIGHT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`;

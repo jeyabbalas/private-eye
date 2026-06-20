@@ -17,6 +17,7 @@
   --caution: #9a6a00;
   --ok: #1f7a3d;
   --radius: 10px;
+  --doc-w: 300px; /* fixed document-group width in the carousel (~4 page tiles + a peek) */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.06);
   --wordmark: "Georgia", "Iowan Old Style", "Times New Roman", serif;
   --mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
@@ -265,17 +266,39 @@ body {
 }
 
 .pe-cargroup {
+  position: relative;
   flex: none;
+  max-width: var(--doc-w);
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Faint, elegant divider sitting in the gap to the right of each document group
+ * (so it also separates the last document from the "+" add tile). Softly faded
+ * at top and bottom rather than a hard full-height rule. */
+.pe-cargroup::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  right: -10px; /* mid-gap; .pe-carousel gap is 20px */
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--line) 18%,
+    var(--line) 82%,
+    transparent
+  );
+  pointer-events: none;
 }
 
 .pe-cargroup-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: 360px;
+  max-width: var(--doc-w);
 }
 
 .pe-cargroup-titles {
@@ -299,6 +322,15 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Always-visible "N pages" cue, so it's clear a fixed-width group holds more
+ * pages than fit. Shown only for multi-page documents. */
+.pe-cargroup-count {
+  flex: none;
+  font: 10.5px/1 var(--mono);
+  color: var(--faint);
+  white-space: nowrap;
+}
+
 /* Per-document actions stay out of the way until the group is hovered/focused. */
 .pe-cargroup-actions {
   display: flex;
@@ -313,9 +345,79 @@ body {
   opacity: 1;
 }
 
+/* Positioning + stacking context for the page-nav chevrons that overlay the tile
+ * strip, so they sit above the (positioned) thumbnails and receive their clicks. */
+.pe-cartiles-wrap {
+  position: relative;
+  isolation: isolate;
+}
+
 .pe-cartiles {
   display: flex;
   gap: 8px;
+  max-width: var(--doc-w);
+  overflow: hidden; /* clip extra pages; paged via JS only -> no scroll-gesture conflict with the carousel */
+  scroll-behavior: smooth;
+  /* Edge fades signal there are more pages; widths are toggled in JS by scroll
+   * position (0px on a side = no fade, e.g. at that end or for short docs). */
+  --fade-l: 0px;
+  --fade-r: 0px;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent 100%
+  );
+}
+
+/* Page-nav chevrons: revealed on hover/focus, like the per-document actions. */
+.pe-carnav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1; /* above the positioned tile thumbnails so clicks hit the chevron */
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+  color: var(--ink-soft);
+  cursor: pointer;
+  opacity: 0;
+  box-shadow: var(--shadow);
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.pe-carnav-prev {
+  left: -4px;
+}
+
+.pe-carnav-next {
+  right: -4px;
+}
+
+.pe-cartiles-wrap:hover .pe-carnav,
+.pe-cargroup:focus-within .pe-carnav {
+  opacity: 1;
+}
+
+.pe-carnav:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.pe-carnav[hidden] {
+  display: none;
 }
 
 .pe-tile {
@@ -403,6 +505,7 @@ body {
 
 .pe-tile-add {
   flex: none;
+  align-self: center; /* center the "+" in the carousel height; docs stay bottom-aligned */
   width: 52px;
   height: 66px;
   border: 1px dashed var(--line-strong);
