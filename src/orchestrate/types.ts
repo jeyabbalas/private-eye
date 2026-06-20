@@ -111,6 +111,9 @@ export interface CorrectionRecord {
   events?: unknown[];
   /** Hash of the base result the edits were made against (staleness guard). */
   baseHash?: string;
+  /** Remembered highlight-sensitivity threshold (τ) for this page's review. A pure
+   *  view preference (not a correction); restored independent of `baseHash`. */
+  tau?: number;
   updatedAt: number;
 }
 
@@ -124,15 +127,3 @@ export const TERMINAL: ReadonlySet<PageStatus> = new Set<PageStatus>([
   'error',
   'cancelled',
 ]);
-
-/**
- * Whether a freshly-read page should land in `needs-review` rather than `done`.
- * Per the plan: review iff the verifier didn't fully pass, or the uncertainty
- * layer surfaced cross-model conflicts or coverage gaps. This is a coarse flag;
- * the tunable attention threshold (Phase 3) does the fine-grained triage.
- */
-export function needsReview(r: { uncertainty?: UncertaintyLayer; verification?: VerificationResult }): boolean {
-  if (r.verification && r.verification.verdict !== 'pass') return true;
-  const u = r.uncertainty;
-  return !!u && (u.reviewItems.length > 0 || u.coverageGaps.length > 0);
-}

@@ -24,7 +24,8 @@ import {
 } from './db.ts';
 import { rasterizePdfPage } from './pdf-raster.ts';
 import { withObjectUrl, memText } from './memory.ts';
-import { needsReview, type PageId, type PageRecord, type PageStatus, type ReadMode } from './types.ts';
+import { type PageId, type PageRecord, type PageStatus, type ReadMode } from './types.ts';
+import { reviewItemCount, TAU_DEFAULT } from '../review/attention.ts';
 import { decodeError, reportError, type AppError } from '../runtime/errors.ts';
 import { isDebug, log } from '../runtime/logger.ts';
 
@@ -231,7 +232,10 @@ export class ProcessingQueue {
         height: result.height,
         createdAt: Date.now(),
       });
-      const status: PageStatus = needsReview(result) ? 'needs-review' : 'done';
+      // Initial status mirrors the live worklist at the default threshold (no
+      // dismissals yet); the review surface keeps it in sync from here on.
+      const status: PageStatus =
+        reviewItemCount(result.uncertainty, result.verification, TAU_DEFAULT) > 0 ? 'needs-review' : 'done';
       await set({ status, width: result.width, height: result.height, renderScale, error: undefined });
     } catch (err) {
       if (this.removed.has(pageId)) {

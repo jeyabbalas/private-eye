@@ -17,6 +17,16 @@ import type { UncertaintyLayer } from '../structure/uncertainty.ts';
 import type { VerificationResult } from '../structure/verify.ts';
 import { confidenceBand, type Band } from './labels.ts';
 
+/** τ range for the highlight-sensitivity slider. Higher τ flags more (anything
+ *  below the threshold); lower τ flags only the shakiest. The default sits at the
+ *  low/worth-a-look band boundary (0.5): because a block's score is the MIN over
+ *  its characters, a higher default would flag nearly every block on a clean
+ *  scan. So the default worklist stays focused on genuinely uncertain regions
+ *  (and the overlay shows red only); dragging right reveals the amber tier. */
+export const TAU_MIN = 0.3;
+export const TAU_MAX = 0.95;
+export const TAU_DEFAULT = 0.5;
+
 export type AttentionCategory =
   | 'conflict'
   | 'unverified-number'
@@ -231,6 +241,21 @@ export function buildAttention(
   });
 
   return items.filter((it) => !dismissed.has(it.id)).sort((a, b) => a.rank - b.rank || a.score - b.score);
+}
+
+/**
+ * How many spots the worklist currently flags at threshold `tau`, after dismissals.
+ * This is the single source of truth for "needs review": a page needs review iff
+ * this is > 0. Used both at OCR time (initial PageRecord.status) and live (to keep
+ * the carousel indicator in sync with the reviewer's activity and the τ slider).
+ */
+export function reviewItemCount(
+  layer: UncertaintyLayer | undefined,
+  verification: VerificationResult | undefined,
+  tau: number,
+  dismissed: Set<string> = new Set(),
+): number {
+  return buildAttention(layer, verification, tau, dismissed).length;
 }
 
 /** Count of items currently demanding attention (drives "N areas need attention"). */

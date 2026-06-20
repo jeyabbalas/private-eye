@@ -49,6 +49,8 @@ export class ReviewSurface {
   private annByItem = new Map<string, BlockAnnotation>();
   private stepIdx = 0;
   private lastMarkdown: string | null = null;
+  /** Last reported needs-review state, so we only notify the workspace on a flip. */
+  private lastNeedsReview: boolean | null = null;
   private destroyed = false;
 
   private undoBtn: HTMLButtonElement | null = null;
@@ -65,6 +67,10 @@ export class ReviewSurface {
     /** Opt this page into a Deep Read re-read (wired by the workspace). Null when
      *  unavailable (e.g. the page is already a Deep Read result). */
     private readonly onReadDeep: (() => void) | null = null,
+    /** Report this page's live needs-review state back to the workspace so the
+     *  carousel tile + persisted status track the reviewer's activity and the τ
+     *  slider. Fires only when the boolean changes. */
+    private readonly onReview: ((needsReview: boolean) => void) | null = null,
   ) {
     this.el = document.createElement('div');
     this.el.className = 'pe-review';
@@ -296,6 +302,12 @@ export class ReviewSurface {
     this.editor?.setAnnotations(anns);
     this.threshold?.setCount(s.attention.length);
     this.threshold?.setStepEnabled(s.attention.length > 0);
+    // Keep the carousel indicator in sync: red iff the worklist is non-empty.
+    const needs = s.attention.length > 0;
+    if (needs !== this.lastNeedsReview) {
+      this.lastNeedsReview = needs;
+      this.onReview?.(needs);
+    }
     this.overlay?.setTau(s.tau);
     if (this.undoBtn) this.undoBtn.disabled = !s.edited;
     if (this.resetBtn) this.resetBtn.disabled = !s.edited;

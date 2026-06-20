@@ -5,9 +5,10 @@
  *
  * The base read is the source of truth; edits are an event log replayed over it
  * (see corrections.ts), so every change is undoable and an unedited page round-
- * trips to byte-identical Markdown. τ is a *view* preference (what to highlight),
- * not a correction — changing it never writes. Saves are debounced and flushed on
- * destroy so rapid typing doesn't thrash IndexedDB.
+ * trips to byte-identical Markdown. τ is a per-page *view* preference (what to
+ * highlight, not a correction) that is remembered across reloads. Saves are
+ * debounced and flushed on destroy so rapid typing — or dragging τ — doesn't
+ * thrash IndexedDB.
  */
 import type { Block } from '../structure/blocks.ts';
 import type { UncertaintyLayer } from '../structure/uncertainty.ts';
@@ -22,7 +23,13 @@ import {
   type CorrectionEvent,
   type WorkingBlock,
 } from './corrections.ts';
-import { buildAttention, type AttentionItem } from './attention.ts';
+import {
+  buildAttention,
+  TAU_DEFAULT,
+  TAU_MAX,
+  TAU_MIN,
+  type AttentionItem,
+} from './attention.ts';
 
 export interface ReviewState {
   /** The working document (base read + replayed corrections). */
@@ -36,15 +43,9 @@ export interface ReviewState {
   edited: boolean;
 }
 
-/** τ range for the highlight-sensitivity slider. Higher τ flags more (anything
- *  below the threshold); lower τ flags only the shakiest. The default sits at the
- *  low/worth-a-look band boundary (0.5): because a block's score is the MIN over
- *  its characters, a higher default would flag nearly every block on a clean
- *  scan. So the default worklist stays focused on genuinely uncertain regions
- *  (and the overlay shows red only); dragging right reveals the amber tier. */
-export const TAU_MIN = 0.3;
-export const TAU_MAX = 0.95;
-export const TAU_DEFAULT = 0.5;
+/** τ range + default for the highlight-sensitivity slider — defined alongside the
+ *  worklist in attention.ts and re-exported here for the threshold control. */
+export { TAU_DEFAULT, TAU_MAX, TAU_MIN } from './attention.ts';
 
 type Listener = (s: ReviewState) => void;
 
@@ -69,7 +70,7 @@ export class ReviewSession {
   private readonly listeners = new Set<Listener>();
   private saveTimer: number | null = null;
 
-  private constructor(result: ResultRecord, correction?: { events?: unknown[]; baseHash?: string }) {
+  private constructor(result: ResultRecord, correction?: { events?: unknown[]; baseHash?: string; tau?: number }) {
     this.pageId = result.pageId;
     this.docId = result.docId;
     this.pipeline = result.pipeline;
@@ -87,6 +88,11 @@ export class ReviewSession {
       correction && correction.baseHash === this.hash && Array.isArray(correction.events)
         ? (correction.events as CorrectionEvent[])
         : [];
+    // τ is a view threshold, valid regardless of the base content — restore it even
+    // when a stale event log was dropped above.
+    if (typeof correction?.tau === 'number') {
+      this.tau = Math.min(TAU_MAX, Math.max(TAU_MIN, correction.tau));
+    }
   }
 
   /** Load a page's result + any saved corrections. Null if it hasn't been read. */
@@ -129,7 +135,8 @@ export class ReviewSession {
     const t = Math.min(TAU_MAX, Math.max(TAU_MIN, tau));
     if (t === this.tau) return;
     this.tau = t;
-    this.emit(); // view-only: no save
+    this.emit();
+    this.scheduleSave(); // τ is a remembered per-page preference
   }
 
   editBlock(uid: string, markdown: string): void {
@@ -191,6 +198,7 @@ export class ReviewSession {
       markdown: this.markdown,
       events: this.events,
       baseHash: this.hash,
+      tau: this.tau,
       updatedAt: Date.now(),
     });
     this.onAfterSave?.();

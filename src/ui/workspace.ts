@@ -34,6 +34,7 @@ import {
   type DocumentRecord,
   type PageId,
   type PageRecord,
+  type PageStatus,
   type ReadMode,
 } from '../orchestrate/types.ts';
 import { ReviewSurface } from '../review/surface.ts';
@@ -651,7 +652,13 @@ export class Workspace {
       return;
     }
 
-    const surface = new ReviewSurface(doc, page, this.quick, () => void this.readPageDeep(page));
+    const surface = new ReviewSurface(
+      doc,
+      page,
+      this.quick,
+      () => void this.readPageDeep(page),
+      (needs) => this.onReviewStatus(page.id, needs),
+    );
     this.surface = surface;
     host.replaceChildren(surface.el);
     void surface.load().catch((e) => {
@@ -670,6 +677,28 @@ export class Workspace {
       this.surface.destroy();
       this.surface = null;
     }
+  }
+
+  /** Push a page's live review state (from its open review surface) back to the
+   *  carousel tile + persisted status, so resolving or reverting flagged spots —
+   *  or moving the sensitivity threshold — flips the indicator. Only ever toggles
+   *  between the two "read successfully" states. */
+  private onReviewStatus(pageId: PageId, needs: boolean): void {
+    const page = this.pageMap.get(pageId);
+    if (!page || !PROCESSED.has(page.status)) return;
+    const status: PageStatus = needs ? 'needs-review' : 'done';
+    if (status === page.status) return;
+    const fresh: PageRecord = { ...page, status, updatedAt: Date.now() };
+    this.pageMap.set(pageId, fresh);
+    const arr = this.pagesByDoc.get(page.docId);
+    if (arr) {
+      const i = arr.findIndex((p) => p.id === pageId);
+      if (i >= 0) arr[i] = fresh;
+    }
+    const tile = this.tileEls.get(pageId);
+    if (tile) this.applyTile(tile, fresh);
+    this.updateRollup(page.docId);
+    void putPage(fresh);
   }
 
   // ---------- interactions ----------
