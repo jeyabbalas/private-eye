@@ -17,6 +17,7 @@ import { ingestFiles } from '../orchestrate/ingest.ts';
 import {
   allDocuments,
   deleteDocumentCascade,
+  getResult,
   pagesByDocument,
   pagesByStatus,
   putPage,
@@ -73,6 +74,7 @@ export class Workspace {
   private progressFill: HTMLElement | null = null;
   private addBtn: HTMLButtonElement | null = null;
   private downloadAllBtn: HTMLButtonElement | null = null;
+  private deepAllBtn: HTMLButtonElement | null = null;
   private stopBtn: HTMLButtonElement | null = null;
   private deepChip: HTMLButtonElement | null = null;
 
@@ -298,9 +300,17 @@ export class Workspace {
     this.updateStatusBar();
   }
 
-  /** Re-read one already-processed page with Deep Read (the review-surface opt-in).
-   *  This is the only way to invoke Deep Read — a deliberate, per-page escalation. */
-  private async readPageDeep(page: PageRecord): Promise<void> {
+  /** Re-read one already-processed page with Deep Read (the review-surface opt-in). */
+  private readPageDeep(page: PageRecord): Promise<void> {
+    return this.escalate([page]);
+  }
+
+  /** Escalate a set of pages to Deep Read: clear the consent + ~1.4 GB load gate
+   *  once, re-mark every page `queued`, then enqueue them all in one deep batch.
+   *  The shared path behind the per-page button and the carousel's per-document /
+   *  Deep-Read-all actions. The queue processes them sequentially. */
+  private async escalate(pages: PageRecord[]): Promise<void> {
+    if (!pages.length) return;
     try {
       await this.ensureDeepReady();
     } catch (e) {
@@ -309,19 +319,76 @@ export class Workspace {
       }
       return;
     }
-    const fresh: PageRecord = { ...page, status: 'queued', error: undefined, updatedAt: Date.now() };
-    await putPage(fresh);
-    this.pageMap.set(page.id, fresh);
-    const arr = this.pagesByDoc.get(page.docId);
-    if (arr) {
-      const i = arr.findIndex((p) => p.id === page.id);
-      if (i >= 0) arr[i] = fresh;
+    const ids: PageId[] = [];
+    const docs = new Set<string>();
+    for (const page of pages) {
+      const fresh: PageRecord = { ...page, status: 'queued', error: undefined, updatedAt: Date.now() };
+      await putPage(fresh);
+      this.pageMap.set(page.id, fresh);
+      const arr = this.pagesByDoc.get(page.docId);
+      if (arr) {
+        const i = arr.findIndex((p) => p.id === page.id);
+        if (i >= 0) arr[i] = fresh;
+      }
+      const tile = this.tileEls.get(page.id);
+      if (tile) this.applyTile(tile, fresh);
+      ids.push(page.id);
+      docs.add(page.docId);
     }
-    const tile = this.tileEls.get(page.id);
-    if (tile) this.applyTile(tile, fresh);
-    this.updateRollup(page.docId);
+    for (const docId of docs) this.updateRollup(docId);
     this.errorShownThisBatch = false;
-    this.queue.enqueue([page.id], 'deep');
+    this.queue.enqueue(ids, 'deep');
+  }
+
+  /** The pages a batch Deep Read will touch: those currently read by Quick Read
+   *  (an exact-transcription result, pipeline 'E') — exactly the pages that offer
+   *  the per-page "Deep Read this page" button. Skips pages already read by Deep
+   *  Read ('G') and pages not yet read / failed. A Deep→exact fallback is stored
+   *  as 'E', so it is correctly re-eligible. */
+  private async deepCandidates(pages: PageRecord[]): Promise<PageRecord[]> {
+    const out: PageRecord[] = [];
+    for (const p of pages) {
+      if (!PROCESSED.has(p.status)) continue;
+      const r = await getResult(p.id);
+      if (r?.pipeline === 'E') out.push(p);
+    }
+    return out;
+  }
+
+  /** Deep Read every Quick-Read page in one document (the carousel per-doc action). */
+  private async readDocDeep(doc: DocumentRecord): Promise<void> {
+    const pages = await this.deepCandidates(this.pagesByDoc.get(doc.id) ?? []);
+    this.confirmDeep(pages, `Deep Read “${doc.name}”`, 'this document');
+  }
+
+  /** Deep Read every Quick-Read page across all documents (the app-bar action). */
+  private async readAllDeep(): Promise<void> {
+    const all: PageRecord[] = [];
+    for (const doc of this.docs) all.push(...(this.pagesByDoc.get(doc.id) ?? []));
+    const pages = await this.deepCandidates(all);
+    this.confirmDeep(pages, 'Deep Read all documents', 'these documents');
+  }
+
+  /** Confirm a batch Deep Read (stating the page count) before escalating, or
+   *  explain when there's nothing left to escalate. */
+  private confirmDeep(pages: PageRecord[], title: string, scope: string): void {
+    if (!pages.length) {
+      showModal({
+        title: 'Nothing to Deep Read',
+        body: `Every readable page in ${scope} has already been Deep Read. Pages still being read or that failed aren’t included.`,
+      });
+      return;
+    }
+    const n = pages.length;
+    const noun = n === 1 ? 'page' : 'pages';
+    showModal({
+      title,
+      body: `This re-reads ${n} ${noun} with the heavier AI-assisted model, one page at a time. It can take a while; each page’s current reading stays until its Deep Read finishes.`,
+      actions: [
+        { label: `Deep Read ${n} ${noun}`, primary: true, onClick: () => void this.escalate(pages) },
+        { label: 'Cancel' },
+      ],
+    });
   }
 
   private startDeepTicker(): void {
@@ -414,8 +481,9 @@ export class Workspace {
     this.addBtn = button('Add files', 'pe-btn', () => this.pickFiles());
     this.stopBtn = button('Stop', 'pe-btn', () => this.queue.cancelAll());
     this.stopBtn.hidden = true;
+    this.deepAllBtn = button('Deep Read all', 'pe-btn', () => void this.readAllDeep());
     this.downloadAllBtn = button('Download all (ZIP)', 'pe-btn pe-btn-primary', () => void this.onDownloadAll());
-    actions.append(this.deepChip, this.addBtn, this.stopBtn, this.downloadAllBtn);
+    actions.append(this.deepChip, this.addBtn, this.stopBtn, this.deepAllBtn, this.downloadAllBtn);
 
     bar.append(status, this.progressBar, actions);
     return bar;
@@ -462,6 +530,10 @@ export class Workspace {
 
     const actions = document.createElement('div');
     actions.className = 'pe-cargroup-actions';
+    const deep = button('', 'pe-iconbtn', () => void this.readDocDeep(doc));
+    deep.title = 'Deep Read this document';
+    deep.setAttribute('aria-label', `Deep Read ${doc.name}`);
+    deep.innerHTML = ICON_DEEP;
     const dl = button('', 'pe-iconbtn', () => void this.onDownloadDoc(doc));
     dl.title = 'Download this document’s Markdown';
     dl.setAttribute('aria-label', `Download ${doc.name}`);
@@ -470,7 +542,7 @@ export class Workspace {
     rm.title = 'Remove this document';
     rm.setAttribute('aria-label', `Remove ${doc.name}`);
     rm.innerHTML = ICON_TRASH;
-    actions.append(dl, rm);
+    actions.append(deep, dl, rm);
 
     const pages = this.pagesByDoc.get(doc.id) ?? [];
     if (pages.length > 1) {
@@ -958,6 +1030,7 @@ export class Workspace {
     const { total, read, done } = this.counts();
 
     if (this.downloadAllBtn) this.downloadAllBtn.disabled = read === 0;
+    if (this.deepAllBtn) this.deepAllBtn.disabled = read === 0;
     if (this.stopBtn) this.stopBtn.hidden = !this.queue.busy;
 
     // The one-time Deep Read model download takes over the status line while it
@@ -1043,6 +1116,7 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
   return b;
 }
 
+const ICON_DEEP = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8L16.5 17.5l1.8-.7z"/></svg>`;
 const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 4 5-4"/><path d="M5 21h14"/></svg>`;
 const ICON_TRASH = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M7 7l1 13h8l1-13"/></svg>`;
 const ICON_CHEVRON_LEFT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`;
