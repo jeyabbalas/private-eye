@@ -6,8 +6,10 @@ node_modules/
 dist/
 out/
 
-# Runtime model weights (fetched from HuggingFace; never committed)
-models/
+# Runtime model weights (fetched from HuggingFace; never committed).
+# Root-anchored so it does NOT swallow public/models/ppocr/calibration.json,
+# which is a tiny committed artifact (the staged layout copy stays ignored below).
+/models/
 
 # Vendored build artifacts staged into public/ by scripts/prepare-build.ts
 # (the COI worker, logos, and committed calibration.json stay tracked)
