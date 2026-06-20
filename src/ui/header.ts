@@ -9,14 +9,14 @@ export function buildHeader(): HTMLElement {
   const header = document.createElement('header');
   header.className = 'pe-header';
   header.innerHTML = `
-    <div class="pe-logo"><img src="${logoUrl}" alt="" width="28" height="28" /></div>
+    <div class="pe-logo"><img src="${logoUrl}" alt="" /></div>
     <div class="pe-titles">
       <div class="pe-name">Private Eye</div>
       <div class="pe-tagline">Privacy-preserving optical character recognition</div>
     </div>
     <div class="pe-header-spacer"></div>
     <a class="pe-github" href="${REPO_URL}" target="_blank" rel="noopener noreferrer" aria-label="View Private Eye on GitHub">
-      <img src="${githubUrl}" alt="" width="22" height="22" />
+      <img src="${githubUrl}" alt="" width="44" height="44" />
     </a>`;
   return header;
 }

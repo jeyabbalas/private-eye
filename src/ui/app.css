@@ -50,26 +50,29 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 20px;
-  height: 58px;
+  padding: 0 52px;
+  height: 72px;
   background: var(--header-bg);
   color: var(--header-ink);
   flex: none;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08);
 }
 
 .pe-logo {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: var(--paper);
   display: grid;
   place-items: center;
   flex: none;
+  overflow: hidden;
 }
 
 .pe-logo img {
-  width: 28px;
-  height: 28px;
+  width: 99%;
+  height: 99%;
+  object-fit: contain;
   display: block;
 }
 
@@ -82,15 +85,16 @@ body {
 
 .pe-name {
   font-family: var(--wordmark);
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 800;
   letter-spacing: 0.3px;
   line-height: 1.1;
 }
 
 .pe-tagline {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--header-muted);
@@ -106,9 +110,9 @@ body {
 .pe-github {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
   opacity: 0.85;
   transition: opacity 0.15s, background 0.15s;
 }
@@ -119,8 +123,8 @@ body {
 }
 
 .pe-github img {
-  width: 22px;
-  height: 22px;
+  width: 44px;
+  height: 44px;
   display: block;
 }
 
