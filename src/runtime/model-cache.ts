@@ -21,8 +21,10 @@
  * per-origin cache bucket.
  */
 
-/** Bump this version to invalidate the cache (e.g. when the default OCR tier changes);
- *  prepareModelCache() drops any older `private-eye-models-*` bucket on the next boot. */
+/** Bump this version to invalidate the cache (e.g. when the default OCR tier changes,
+ *  or when the model source URLs change — mirroring/pinning the HF weights; see
+ *  SOURCES in src/runtime/assets.ts); prepareModelCache() drops any older
+ *  `private-eye-models-*` bucket on the next boot. */
 const CACHE = 'private-eye-models-v1';
 
 /** The adapter's fetch (with retry/backoff), parameterised so the miss path can request

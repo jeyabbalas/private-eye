@@ -16,6 +16,10 @@ const ANALYZING = [
 export const WARMING = 'Polishing the magnifying glass…';
 export const CASE_CLOSED = 'Case closed.';
 
+/** Empty-state hint when the eager warm-up was deferred (a metered / Data-Saver
+ *  connection): the models load on the first upload instead of on page load. */
+export const WARM_DEFERRED = 'Quick Read loads as soon as you add your first file.';
+
 export function stageMessage(stage: StageKey, tick = 0): string {
   switch (stage) {
     case 'loading':

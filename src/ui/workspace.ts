@@ -43,7 +43,7 @@ import { showErrorModal, showModal } from './modal.ts';
 import { confirmDeepRead, DeepDeclined } from './deep-consent.ts';
 import { escapeHtml, fmtBytes } from './progress.ts';
 import { makeThumbUrl } from './thumbs.ts';
-import { CASE_CLOSED, deepPhaseMessage, SPECIALIST, stageMessage, WARMING } from './copy.ts';
+import { CASE_CLOSED, deepPhaseMessage, SPECIALIST, stageMessage, WARM_DEFERRED, WARMING } from './copy.ts';
 import type { DeepPhaseKind, StageKey } from '../workers/protocol.ts';
 import type { Capabilities } from '../runtime/capabilities.ts';
 import { isDebug, log } from '../runtime/logger.ts';
@@ -112,6 +112,9 @@ export class Workspace {
   constructor(
     private readonly quick: QuickClient,
     private readonly caps?: Capabilities,
+    /** Eager warm-up was skipped (metered connection); Quick Read loads on the
+     *  first upload. Only affects the empty-state hint copy. */
+    private readonly warmDeferred = false,
   ) {
     this.queue = new ProcessingQueue(quick);
     this.queue.setDeepProvider(() => this.ensureDeepReady());
@@ -435,7 +438,9 @@ export class Workspace {
     zone.innerHTML = `
       <h2>Add pages to begin</h2>
       <p>Drop images or PDFs here. Everything runs privately in your browser — nothing is ever uploaded.</p>
-      <div class="pe-hint">${this.ready ? 'Quick Read is ready — add images or PDFs to begin.' : escapeHtml(WARMING)}</div>`;
+      <div class="pe-hint">${escapeHtml(
+        this.ready ? 'Quick Read is ready — add images or PDFs to begin.' : this.warmDeferred ? WARM_DEFERRED : WARMING,
+      )}</div>`;
     zone.addEventListener('click', () => this.pickFiles());
     zone.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {

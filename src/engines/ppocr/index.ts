@@ -16,6 +16,7 @@ import { normalizeToCHW, resizeBilinear, rotate90ccw, warpQuad } from '../../cor
 import type { ModelSpec, RuntimeContext } from '../../adapters/types.ts';
 import { DB_DEFAULTS, dbPostprocess, type DbParams } from './db.ts';
 import { buildCharset, ctcGreedyDecode } from './ctc.ts';
+import { log } from '../../runtime/logger.ts';
 
 /** PP-OCRv6 model tier: tiny (≈6 MB) / small (≈30 MB) / medium (≈132 MB). det and
  *  rec are downloaded as a tier-matched pair. */
@@ -130,7 +131,7 @@ export class PpocrEngine {
     const n = this.dict.length;
     if (C === n + 2) this.charset = buildCharset(this.dict, true);
     else if (C === n + 1) this.charset = buildCharset(this.dict, false);
-    else console.warn(`[ppocr] rec output dim C=${C} != dict(${n})+blank(+space); charset may be misaligned`);
+    else log.warn(`[ppocr] rec output dim C=${C} != dict(${n})+blank(+space); charset may be misaligned`);
   }
 
   /** Detect text quads on the full image (original coordinates). */

@@ -12,6 +12,12 @@ import type { DocKind, DocumentRecord, PageRecord } from './types.ts';
 const IMAGE_MIME = /^image\/(png|jpe?g|webp|bmp|gif|avif|tiff?)$/i;
 const PDF_NAME = /\.pdf$/i;
 
+/** A guardrail against accidentally feeding a multi-GB file into the in-browser
+ *  rasterizer/OCR (which would OOM the tab), not a product limit — real scans and
+ *  PDFs are far below this. Empty (0-byte) files are rejected too: they only fail
+ *  later with a cryptic decode error. */
+const MAX_FILE_BYTES = 500 * 1024 * 1024;
+
 export interface IngestedDoc {
   doc: DocumentRecord;
   pages: PageRecord[];
@@ -39,6 +45,16 @@ export async function ingestFiles(files: File[]): Promise<IngestSummary> {
   const skipped: IngestSummary['skipped'] = [];
 
   for (const file of files) {
+    if (file.size === 0) {
+      skipped.push({ name: file.name, reason: 'file is empty (0 bytes)' });
+      continue;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      const mb = Math.round(file.size / 1e6);
+      skipped.push({ name: file.name, reason: `file is too large (${mb} MB; the limit is ${Math.round(MAX_FILE_BYTES / 1e6)} MB)` });
+      continue;
+    }
+
     const kind = classify(file);
     if (!kind) {
       skipped.push({ name: file.name, reason: `unsupported file type (${file.type || 'unknown'})` });

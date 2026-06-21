@@ -27,7 +27,7 @@ to `huggingface.co`.
 |---|---|---|
 | Engine | Deterministic OCR pipeline (PP-DocLayoutV3 → PP-OCRv6 → SLANet) | GLM-OCR vision–language model (via [wllama](https://github.com/ngxson/wllama)) |
 | Best for | Clean scans; an exact, faithful transcription | Messy layouts and complex structure |
-| Download | ~tens of MB, browser-cached | ~1.4 GB of weights, cached on-device (OPFS) |
+| Download | ~275 MB on first use, browser-cached | ~1.4 GB of weights, cached on-device (OPFS) |
 | Runs | Off the main thread, in a Web Worker | wllama's own worker pool (WebGPU when available) |
 
 **Deep Read keeps the numbers honest.** A language model can read fluently and still invent a
@@ -84,7 +84,9 @@ Append `?debug=1` to the URL to enable the (otherwise silent) diagnostic logger.
 Pushing to `main` builds and publishes to **GitHub Pages** via
 [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) (build → typecheck → test →
 deploy). The app is served under the `/private-eye/` base path. Model weights are streamed from
-Hugging Face at runtime; only the small patched layout graph is vendored into the build.
+Hugging Face at runtime; only the small patched layout graph is vendored into the build (its
+~130 MB of weights stream from Hugging Face like the rest). On a metered or Data-Saver
+connection the eager warm-up is skipped, so the weights load on the first upload instead.
 
 ## How it works
 

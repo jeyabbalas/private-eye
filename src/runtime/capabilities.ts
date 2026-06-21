@@ -45,6 +45,20 @@ export async function detectCapabilities(): Promise<Capabilities> {
   };
 }
 
+/** Hard requirements the whole app depends on (both reading modes need them).
+ *  Returns a short reason naming the first missing capability, or null when the
+ *  environment can run Private Eye. Synchronous, so boot can gate before doing any
+ *  work. WebGPU and cross-origin isolation are deliberately NOT required here —
+ *  Quick Read falls back to single-threaded WASM and Deep Read is opt-in. */
+export function unsupportedReason(): string | null {
+  if (typeof self !== 'undefined' && !self.isSecureContext) return 'insecure context (needs HTTPS or localhost)';
+  if (typeof Worker === 'undefined') return 'Web Workers unavailable';
+  if (typeof WebAssembly === 'undefined') return 'WebAssembly unavailable';
+  if (typeof OffscreenCanvas === 'undefined') return 'OffscreenCanvas unavailable';
+  if (typeof createImageBitmap !== 'function') return 'createImageBitmap unavailable';
+  return null;
+}
+
 /** Plain-language recommendation for whether Deep Read is advisable here. */
 export function deepReadAdvisable(caps: Capabilities): boolean {
   const mem = caps.deviceMemoryGb ?? 8; // unknown -> assume capable, the runner preflights too

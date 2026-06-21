@@ -33,46 +33,60 @@ interface ModelGroup {
   files: FileSpec[];
 }
 
-const hf = (repo: string, file: string) => `https://huggingface.co/${repo}/resolve/main/${file}`;
+// Upstream model sources, one per HF repo. To mirror + pin (keeps CI reproducible
+// and matches the runtime resolver), point `repo` at your mirror and set `rev` to a
+// commit SHA — exactly the SOURCES block in src/runtime/assets.ts. Until then these
+// track `main` (a moving ref).
+type Source = { repo: string; rev: string };
+const SOURCES = {
+  ppocrDet: { repo: 'PaddlePaddle/PP-OCRv6_medium_det_onnx', rev: 'main' },
+  ppocrRec: { repo: 'PaddlePaddle/PP-OCRv6_medium_rec_onnx', rev: 'main' },
+  slanet: { repo: 'PaddlePaddle/SLANet_plus_onnx', rev: 'main' },
+  layout: { repo: 'Bei0001/PP-DocLayoutV3-ONNX', rev: 'main' },
+  glmOcr: { repo: 'ggml-org/GLM-OCR-GGUF', rev: 'main' },
+} as const;
+
+const hf = (src: Source, file: string) => `https://huggingface.co/${src.repo}/resolve/${src.rev}/${file}`;
+const repoUrl = (src: Source) => `https://huggingface.co/${src.repo}`;
 
 const GROUPS: ModelGroup[] = [
   {
     id: 'ppocr-det-medium',
     license: 'Apache-2.0',
-    source: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx',
+    source: repoUrl(SOURCES.ppocrDet),
     files: [
-      { url: hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.onnx'), dest: 'ppocr/det-medium/inference.onnx' },
-      { url: hf('PaddlePaddle/PP-OCRv6_medium_det_onnx', 'inference.yml'), dest: 'ppocr/det-medium/inference.yml' },
+      { url: hf(SOURCES.ppocrDet, 'inference.onnx'), dest: 'ppocr/det-medium/inference.onnx' },
+      { url: hf(SOURCES.ppocrDet, 'inference.yml'), dest: 'ppocr/det-medium/inference.yml' },
     ],
   },
   {
     id: 'ppocr-rec-medium',
     license: 'Apache-2.0',
-    source: 'https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx',
+    source: repoUrl(SOURCES.ppocrRec),
     files: [
-      { url: hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.onnx'), dest: 'ppocr/rec-medium/inference.onnx' },
-      { url: hf('PaddlePaddle/PP-OCRv6_medium_rec_onnx', 'inference.yml'), dest: 'ppocr/rec-medium/inference.yml' },
+      { url: hf(SOURCES.ppocrRec, 'inference.onnx'), dest: 'ppocr/rec-medium/inference.onnx' },
+      { url: hf(SOURCES.ppocrRec, 'inference.yml'), dest: 'ppocr/rec-medium/inference.yml' },
     ],
   },
   {
     id: 'slanet-plus',
     license: 'Apache-2.0',
-    source: 'https://huggingface.co/PaddlePaddle/SLANet_plus_onnx',
+    source: repoUrl(SOURCES.slanet),
     files: [
-      { url: hf('PaddlePaddle/SLANet_plus_onnx', 'inference.onnx'), dest: 'slanet/inference.onnx' },
-      { url: hf('PaddlePaddle/SLANet_plus_onnx', 'inference.yml'), dest: 'slanet/inference.yml' },
+      { url: hf(SOURCES.slanet, 'inference.onnx'), dest: 'slanet/inference.onnx' },
+      { url: hf(SOURCES.slanet, 'inference.yml'), dest: 'slanet/inference.yml' },
     ],
   },
   {
     id: 'doclayoutv3-community',
     license: 'Apache-2.0 (community export of PaddlePaddle/PP-DocLayoutV3)',
-    source: 'https://huggingface.co/Bei0001/PP-DocLayoutV3-ONNX',
+    source: repoUrl(SOURCES.layout),
     files: [
-      { url: hf('Bei0001/PP-DocLayoutV3-ONNX', 'PP-DocLayoutV3.onnx'), dest: 'layout/doclayoutv3/PP-DocLayoutV3.onnx' },
-      { url: hf('Bei0001/PP-DocLayoutV3-ONNX', 'PP-DocLayoutV3.onnx.data'), dest: 'layout/doclayoutv3/PP-DocLayoutV3.onnx.data' },
-      { url: hf('Bei0001/PP-DocLayoutV3-ONNX', 'inference.yml'), dest: 'layout/doclayoutv3/inference.yml' },
-      { url: hf('Bei0001/PP-DocLayoutV3-ONNX', 'config.json'), dest: 'layout/doclayoutv3/config.json' },
-      { url: hf('Bei0001/PP-DocLayoutV3-ONNX', 'preprocessor_config.json'), dest: 'layout/doclayoutv3/preprocessor_config.json' },
+      { url: hf(SOURCES.layout, 'PP-DocLayoutV3.onnx'), dest: 'layout/doclayoutv3/PP-DocLayoutV3.onnx' },
+      { url: hf(SOURCES.layout, 'PP-DocLayoutV3.onnx.data'), dest: 'layout/doclayoutv3/PP-DocLayoutV3.onnx.data' },
+      { url: hf(SOURCES.layout, 'inference.yml'), dest: 'layout/doclayoutv3/inference.yml' },
+      { url: hf(SOURCES.layout, 'config.json'), dest: 'layout/doclayoutv3/config.json' },
+      { url: hf(SOURCES.layout, 'preprocessor_config.json'), dest: 'layout/doclayoutv3/preprocessor_config.json' },
     ],
   },
   // Pipeline G VLM: the official GLM-OCR GGUF pair (MIT). Q8_0 is the shipped
@@ -81,10 +95,10 @@ const GROUPS: ModelGroup[] = [
   {
     id: 'glm-ocr-gguf-q8',
     license: 'MIT (official GGUF of zai-org/GLM-OCR)',
-    source: 'https://huggingface.co/ggml-org/GLM-OCR-GGUF',
+    source: repoUrl(SOURCES.glmOcr),
     files: [
-      { url: hf('ggml-org/GLM-OCR-GGUF', 'GLM-OCR-Q8_0.gguf'), dest: 'bakeoff/glm-ocr-q8/GLM-OCR-Q8_0.gguf' },
-      { url: hf('ggml-org/GLM-OCR-GGUF', 'mmproj-GLM-OCR-Q8_0.gguf'), dest: 'bakeoff/glm-ocr-q8/mmproj-GLM-OCR-Q8_0.gguf' },
+      { url: hf(SOURCES.glmOcr, 'GLM-OCR-Q8_0.gguf'), dest: 'bakeoff/glm-ocr-q8/GLM-OCR-Q8_0.gguf' },
+      { url: hf(SOURCES.glmOcr, 'mmproj-GLM-OCR-Q8_0.gguf'), dest: 'bakeoff/glm-ocr-q8/mmproj-GLM-OCR-Q8_0.gguf' },
     ],
   },
 ];
