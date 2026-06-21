@@ -23,27 +23,27 @@ export function vendored(rel: string): string {
 }
 
 /**
- * Model weight sources, one entry per upstream HuggingFace repo. To remove the
- * third-party dependency and make loads reproducible, MIRROR these files into your
- * own HF namespace and PIN a revision:
- *   1. upload the files (scripts/fetch-models.ts lists every one) under e.g.
- *      `jeyabbalas/private-eye-models`;
- *   2. point `repo` at your repo and set `rev` to the mirrored commit SHA;
- *   3. bump CACHE in model-cache.ts so returning users refetch from the new URLs.
- * Until pinned, these track the upstream repos at `main` (a moving ref): a rename,
- * deletion, or reupload upstream breaks loads with no fallback — and the 130 MB
- * layout `.data` in particular lives on an individual account.
+ * Model weight sources, pinned to immutable commits. The Quick Read weights are mirrored
+ * into our own HF namespace (jeyabbalas/private-eye-models) so the always-used path never
+ * depends on a third-party repo moving, going private, or being rewritten; Deep Read's
+ * large GGUF stays on the stable official ggml-org repo, pinned to a commit. `dir` is the
+ * repo subpath a source lives under (omitted for repos whose files sit at the root).
+ *
+ * To re-mirror or re-pin: upload the files (scripts/fetch-models.ts lists every one),
+ * update `repo`/`rev`/`dir` here AND in the matching block in scripts/fetch-models.ts,
+ * then bump CACHE in model-cache.ts so returning users refetch from the new URLs.
  */
+type Source = { repo: string; rev: string; dir?: string };
 const SOURCES = {
-  ppocrDet: { repo: 'PaddlePaddle/PP-OCRv6_medium_det_onnx', rev: 'main' },
-  ppocrRec: { repo: 'PaddlePaddle/PP-OCRv6_medium_rec_onnx', rev: 'main' },
-  slanet: { repo: 'PaddlePaddle/SLANet_plus_onnx', rev: 'main' },
-  layout: { repo: 'Bei0001/PP-DocLayoutV3-ONNX', rev: 'main' },
-  glmOcr: { repo: 'ggml-org/GLM-OCR-GGUF', rev: 'main' },
+  ppocrDet: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'ppocr/det-medium' },
+  ppocrRec: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'ppocr/rec-medium' },
+  slanet: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'slanet' },
+  layout: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'layout/doclayoutv3' },
+  glmOcr: { repo: 'ggml-org/GLM-OCR-GGUF', rev: '65a42de1148dbed2297e922b5dbc7d9b70c36578' },
 } as const;
 
-const hf = (src: { repo: string; rev: string }, file: string): string =>
-  `https://huggingface.co/${src.repo}/resolve/${src.rev}/${file}`;
+const hf = (src: Source, file: string): string =>
+  `https://huggingface.co/${src.repo}/resolve/${src.rev}/${src.dir ? src.dir + '/' : ''}${file}`;
 
 /** models/-relative path -> HuggingFace CDN URL. Anything not listed here is
  *  resolved same-origin via vendored() (the patched layout graph, the .yml

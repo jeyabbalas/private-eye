@@ -33,20 +33,23 @@ interface ModelGroup {
   files: FileSpec[];
 }
 
-// Upstream model sources, one per HF repo. To mirror + pin (keeps CI reproducible
-// and matches the runtime resolver), point `repo` at your mirror and set `rev` to a
-// commit SHA — exactly the SOURCES block in src/runtime/assets.ts. Until then these
-// track `main` (a moving ref).
-type Source = { repo: string; rev: string };
+// Model sources, pinned to immutable commits — keep this block in sync with the SOURCES
+// block in src/runtime/assets.ts (the runtime resolver). The Quick Read weights are
+// mirrored into our own namespace (jeyabbalas/private-eye-models); Deep Read's GGUF stays
+// on the official ggml-org repo, pinned. `dir` is the repo subpath a source lives under
+// (omitted for repos whose files sit at the root). To re-mirror/re-pin, update both blocks
+// and bump CACHE in src/runtime/model-cache.ts.
+type Source = { repo: string; rev: string; dir?: string };
 const SOURCES = {
-  ppocrDet: { repo: 'PaddlePaddle/PP-OCRv6_medium_det_onnx', rev: 'main' },
-  ppocrRec: { repo: 'PaddlePaddle/PP-OCRv6_medium_rec_onnx', rev: 'main' },
-  slanet: { repo: 'PaddlePaddle/SLANet_plus_onnx', rev: 'main' },
-  layout: { repo: 'Bei0001/PP-DocLayoutV3-ONNX', rev: 'main' },
-  glmOcr: { repo: 'ggml-org/GLM-OCR-GGUF', rev: 'main' },
+  ppocrDet: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'ppocr/det-medium' },
+  ppocrRec: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'ppocr/rec-medium' },
+  slanet: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'slanet' },
+  layout: { repo: 'jeyabbalas/private-eye-models', rev: 'f1ec7e4768b2418c5e8cd88e9aaac217a00f6f97', dir: 'layout/doclayoutv3' },
+  glmOcr: { repo: 'ggml-org/GLM-OCR-GGUF', rev: '65a42de1148dbed2297e922b5dbc7d9b70c36578' },
 } as const;
 
-const hf = (src: Source, file: string) => `https://huggingface.co/${src.repo}/resolve/${src.rev}/${file}`;
+const hf = (src: Source, file: string) =>
+  `https://huggingface.co/${src.repo}/resolve/${src.rev}/${src.dir ? src.dir + '/' : ''}${file}`;
 const repoUrl = (src: Source) => `https://huggingface.co/${src.repo}`;
 
 const GROUPS: ModelGroup[] = [

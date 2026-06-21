@@ -4,7 +4,7 @@
  * graphs, SLANet, and the 130 MB PP-DocLayoutV3 external-data file). Without this they
  * ride only the browser HTTP cache, which is unreliable for files this large and
  * cross-origin — browsers cap per-resource/total cache size and evict large entries,
- * and HF's `…/resolve/main/…` URLs 302-redirect to signed CDN URLs that change between
+ * and HF's `…/resolve/<rev>/…` URLs 302-redirect to signed CDN URLs that change between
  * sessions, so the URL-keyed HTTP cache usually misses. The net effect is a returning
  * user re-downloading ~275 MB. CacheStorage gives an app-controlled, durable copy keyed
  * by the stable original URL — the Quick Read mirror of the OPFS cache Deep Read already
@@ -25,7 +25,7 @@
  *  or when the model source URLs change — mirroring/pinning the HF weights; see
  *  SOURCES in src/runtime/assets.ts); prepareModelCache() drops any older
  *  `private-eye-models-*` bucket on the next boot. */
-const CACHE = 'private-eye-models-v1';
+const CACHE = 'private-eye-models-v2';
 
 /** The adapter's fetch (with retry/backoff), parameterised so the miss path can request
  *  `cache:'no-store'`. */
@@ -66,7 +66,7 @@ export async function cachedModelBytes(url: string, fetcher: Fetcher): Promise<U
   // Miss: a single network copy, with no HTTP-cache duplicate — CacheStorage is the one
   // persistent copy.
   const bytes = await fetcher(url, { cache: 'no-store' });
-  // HF's resolve/main 302-redirects, and cache.put() REJECTS a redirected Response — so
+  // HF's resolve/<rev> 302-redirects, and cache.put() REJECTS a redirected Response — so
   // store a freshly-constructed Response under the stable original URL. Best-effort: a
   // full or unavailable cache must not fail the load (we already hold the bytes).
   try {
