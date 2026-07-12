@@ -1,6 +1,7 @@
 /** Line-level classification predicates used by the assembler. */
 import type { Seg } from './fragments.ts';
 import { boxWidth } from '../core/types.ts';
+import { parseKvLine, type ParsedKvLine } from './pairing/kvline.ts';
 
 const UNAMBIGUOUS_BULLET = /^[•◦·▪‣*+–—]$/;
 // Tesseract misreads bullet glyphs inconsistently: single lowercase letters
@@ -49,27 +50,23 @@ export function parseBullet(seg: Seg, m: PageMetrics): BulletParse {
   return { isBullet: true, ...splitLead(rest) };
 }
 
-/** Split "Lead: rest" into a bold lead + remainder if the lead is short. */
+/** Split "Lead: rest" into a bold lead + remainder (validated line-kv split —
+ *  structure + type semantics, see pairing/kvline.ts). */
 export function splitLead(text: string): { lead?: string; text: string } {
-  const m = /^([A-Za-z][A-Za-z0-9 ()/&'.+-]{0,45}?):\s+(.*\S)$/.exec(text);
-  if (m && m[1]!.split(/\s+/).length <= 7) return { lead: m[1]!.trim(), text: m[2]! };
+  const kv = parseKvLine(text);
+  if (kv.isKv) return { lead: kv.label!, text: kv.value! };
   return { text };
 }
 
-export interface KvParse {
-  isKv: boolean;
-  label?: string;
-  value?: string;
-}
+export type KvParse = ParsedKvLine;
 
-/** Detect a standalone "Label: value" line (label short, value non-empty).
- *  Stricter than splitLead: a printed field label starts uppercase and never
- *  contains parentheses — that shape is a sentence fragment like
- *  "cases include benign adenomas from 2018 (Ref: …", not a field. */
+/** Detect a standalone "Label: value" line. Delegates to the validated
+ *  line-kv splitter: structural shape (1–7 word label, balanced brackets, no
+ *  terminal sentence punctuation — commas/parens/lowercase ARE legal, real
+ *  labels use them: "Prostate, biopsy:", "pT2:") plus the semantic bar
+ *  (label-typed left, value-typed right must beat neutrality). */
 export function parseKvText(text: string): KvParse {
-  const m = /^([A-Z][A-Za-z0-9 /&'.+-]{0,45}?):\s+(.*\S)$/.exec(text.trim());
-  if (m && m[1]!.split(/\s+/).length <= 5) return { isKv: true, label: m[1]!.trim(), value: m[2]! };
-  return { isKv: false };
+  return parseKvLine(text);
 }
 
 export function parseKv(seg: Seg): KvParse {
