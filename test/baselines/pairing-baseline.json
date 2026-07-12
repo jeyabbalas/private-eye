@@ -1,0 +1,123 @@
+{
+  "capturedAt": "2026-07-12T15:55:40.529Z",
+  "pipeline": "ppstructure medium@960+slanet+learned",
+  "perFixture": {
+    "ho-fax.001": {
+      "gtPairs": 6,
+      "tp": 6,
+      "fp": 0,
+      "emitted": 6,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 6,
+      "criticalFound": 6
+    },
+    "ho-ihc.001": {
+      "gtPairs": 6,
+      "tp": 6,
+      "fp": 0,
+      "emitted": 6,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 5,
+      "criticalFound": 5
+    },
+    "ho-serif.001": {
+      "gtPairs": 6,
+      "tp": 6,
+      "fp": 0,
+      "emitted": 6,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 6,
+      "criticalFound": 6
+    },
+    "ho-stamp.001": {
+      "gtPairs": 6,
+      "tp": 6,
+      "fp": 0,
+      "emitted": 7,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 5,
+      "criticalFound": 5
+    },
+    "ho-synoptic.001": {
+      "gtPairs": 17,
+      "tp": 8,
+      "fp": 0,
+      "emitted": 8,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 9,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 4,
+      "criticalFound": 4
+    },
+    "ho-twocol.001": {
+      "gtPairs": 6,
+      "tp": 6,
+      "fp": 0,
+      "emitted": 6,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 6,
+      "criticalFound": 6
+    },
+    "sample1.001": {
+      "gtPairs": 9,
+      "tp": 5,
+      "fp": 2,
+      "emitted": 7,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 4,
+      "ocrMiss": 0,
+      "criticalTotal": 5,
+      "criticalFound": 4
+    },
+    "sample1.002": {
+      "gtPairs": 4,
+      "tp": 1,
+      "fp": 1,
+      "emitted": 2,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 3,
+      "ocrMiss": 0,
+      "criticalTotal": 1,
+      "criticalFound": 1
+    },
+    "sample3.001": {
+      "gtPairs": 9,
+      "tp": 9,
+      "fp": 0,
+      "emitted": 9,
+      "mispaired": 0,
+      "inTable": 0,
+      "inList": 0,
+      "unpaired": 0,
+      "ocrMiss": 0,
+      "criticalTotal": 6,
+      "criticalFound": 6
+    }
+  }
+}

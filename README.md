@@ -79,6 +79,35 @@ npm test           # vitest — unit tests for the numeric-critical pipeline
 
 Append `?debug=1` to the URL to enable the (otherwise silent) diagnostic logger.
 
+## Evaluation
+
+Two headless harnesses run the full Quick Read pipeline over the fixture pages in
+`test/fixtures/pathology_reports/` and score the output against the ground truth in
+`test/fixtures/ground_truth/`:
+
+```bash
+npm run fetch-models     # once: mirror the model weights locally
+npm run ocr:harness      # text accuracy (CER, numeric fabrication/omission)
+npm run pairing:harness  # label↔value pairing (per-fixture P/R/F1 + confidence)
+```
+
+**HOLDOUT RULE: fixtures are TRANSFER-ONLY — never tune any constant on these numbers.**
+The fixtures exist to *measure transfer*, not to fit: every threshold in `src/structure/`
+must be derived from within-page structure (relative gap distributions, mutual-nearest
+assignments, vote neutrality points) or fitted on external corpora (FUNSD), never nudged
+until a fixture passes. The pairing harness prints this rule on every run.
+
+Touching anything under `src/structure/` means running `npm run pairing:harness` **before
+and after** the change. The harness compares against the committed baseline
+(`test/baselines/pairing-baseline.json`) and prints signed deltas plus a ship verdict:
+
+- **Ship rule:** aggregate F1 *and every leave-one-family-out (LOLO) aggregate* must hold
+  or improve. LOLO recomputes the aggregate with each fixture family (`ho-fax`, `sample1`,
+  …) excluded — an improvement that only helps one family (or silently trades one family
+  against another) fails the rule.
+- `npm run pairing:harness -- --update-baseline` promotes the new numbers once a change
+  ships; per-page markdown and the JSON summary land in `out/pairing/<runId>/`.
+
 ## Deploy
 
 Pushing to `main` builds and publishes to **GitHub Pages** via

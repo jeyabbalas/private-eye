@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ocr:harness": "node --experimental-strip-types scripts/ocr-harness.ts",
+    "pairing:harness": "node --experimental-strip-types scripts/pairing-harness.ts",
     "calibrate": "node --experimental-strip-types scripts/calibrate-uncertainty.ts"
   },
   "dependencies": {
