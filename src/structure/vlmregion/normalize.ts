@@ -8,6 +8,7 @@
 import type { BBox } from '../../core/types.ts';
 import { parseDoc } from '../../eval/mdast.ts';
 import { parseKvText, splitLead } from '../classify.ts';
+import { parseKvLine } from '../pairing/kvline.ts';
 import type { Block } from '../blocks.ts';
 import type { RegionKind } from './replay.ts';
 import { fcelTableToGrid, inlineHtmlTables } from './htmltable.ts';
@@ -55,7 +56,59 @@ function flatText(md: string): string {
     .trim();
 }
 
+/**
+ * The VLM's own kv assertions — `**Label:** value` / `**Label**: value` lines —
+ * must be read on the RAW cleaned markdown: consecutive tight kv lines are one
+ * mdast paragraph with the emphasis stripped, so after parseDoc the assertion
+ * is gone and the run flattens into a single garbled paragraph. Split the text
+ * into kv items and plain-markdown chunks, order preserved. The split is
+ * lenient (shape-only): the VLM asserted the pairing, and the numeric anchor
+ * layer audits its tokens downstream.
+ */
+const VLM_KV_LINE = /^\*\*([^*]+?)(:)?\*\*(:)?\s+(\S.*)$/;
+
+type MdOrKv = { md: string } | { kv: { label: string; value: string } };
+
+function splitVlmKvRuns(md: string): MdOrKv[] {
+  const out: MdOrKv[] = [];
+  let buf: string[] = [];
+  const flush = () => {
+    if (buf.length) out.push({ md: buf.join('\n') });
+    buf = [];
+  };
+  let inHtmlTable = 0;
+  for (const line of md.split('\n')) {
+    inHtmlTable += (line.match(/<table\b/gi) ?? []).length;
+    const closes = (line.match(/<\/table>/gi) ?? []).length;
+    const m = inHtmlTable > 0 ? null : VLM_KV_LINE.exec(line.trim());
+    inHtmlTable = Math.max(0, inHtmlTable - closes);
+    if (m && (m[2] || m[3])) {
+      const kv = parseKvLine(`${m[1]!.trim()}: ${m[4]!}`, { lenient: true });
+      if (kv.isKv) {
+        flush();
+        out.push({ kv: { label: kv.label!, value: kv.value! } });
+        continue;
+      }
+    }
+    buf.push(line);
+  }
+  flush();
+  return out;
+}
+
 function mapTextBlocks(md: string, box: BBox, intraHeadingDepth: 1 | 2 | 3): Block[] {
+  const out: Block[] = [];
+  for (const item of splitVlmKvRuns(md)) {
+    if ('kv' in item) {
+      out.push({ kind: 'kv', label: item.kv.label, value: item.kv.value, box });
+      continue;
+    }
+    out.push(...mapMdBlocks(item.md, box, intraHeadingDepth));
+  }
+  return out;
+}
+
+function mapMdBlocks(md: string, box: BBox, intraHeadingDepth: 1 | 2 | 3): Block[] {
   const out: Block[] = [];
   for (const b of parseDoc(inlineHtmlTables(md))) {
     switch (b.type) {
@@ -130,14 +183,19 @@ export function vlmRegionToBlocks(raw: string, kind: RegionKind | 'page', box: B
   }
 
   if (kind === 'page') {
-    const blocks = parseDoc(inlineHtmlTables(clean));
     const out: Block[] = [];
-    for (const b of blocks) {
-      if (b.type === 'heading') {
-        const d = Math.min(3, Math.max(1, b.depth)) as 1 | 2 | 3;
-        if (b.text.trim()) out.push({ kind: 'heading', depth: d, text: b.text.trim(), box });
-      } else {
-        out.push(...mapTextBlocksSingle(b, box));
+    for (const item of splitVlmKvRuns(clean)) {
+      if ('kv' in item) {
+        out.push({ kind: 'kv', label: item.kv.label, value: item.kv.value, box });
+        continue;
+      }
+      for (const b of parseDoc(inlineHtmlTables(item.md))) {
+        if (b.type === 'heading') {
+          const d = Math.min(3, Math.max(1, b.depth)) as 1 | 2 | 3;
+          if (b.text.trim()) out.push({ kind: 'heading', depth: d, text: b.text.trim(), box });
+        } else {
+          out.push(...mapTextBlocksSingle(b, box));
+        }
       }
     }
     return out.length ? out : null;

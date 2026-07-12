@@ -120,6 +120,20 @@ function ocrTextBlocks(lines: OcrLine[], ocr: OcrResult, scales: PageScales): Bl
   return buildDocModel(sub, { headings: false, metrics: scales, colAnchor: 'left' }).blocks;
 }
 
+/** VLM pairing is preserved only when the deterministic OCR confirms the
+ *  value: if numeric anchoring emptied a kv's value (its tokens were
+ *  unattested and dropped), the pairing claim has nothing audited left to
+ *  bind — demote to a paragraph carrying the label. In place: blocks keep
+ *  their positions so already-stamped event block indices stay valid. */
+export function demoteEmptiedKvs(blocks: Block[]): void {
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]!;
+    if (b.kind === 'kv' && !/[A-Za-z0-9]/.test(b.value)) {
+      blocks[i] = { kind: 'paragraph', text: `${b.label}:`, box: b.box };
+    }
+  }
+}
+
 type Entry =
   | { synth: false; reg: ExportRegion; lines: OcrLine[] }
   | { synth: true; region: Region; lines: OcrLine[] };
@@ -192,6 +206,7 @@ export async function buildDocFromReplay(
     const evBase = stats.anchor.events.length;
     const res = anchorBlocks(toAnchor, region, pool, opts.anchor, stats.anchor);
     for (let k = evBase; k < stats.anchor.events.length; k++) stats.anchor.events[k]!.blockIndex += base;
+    demoteEmptiedKvs(res);
     return res;
   };
 
@@ -208,6 +223,7 @@ export async function buildDocFromReplay(
     }
     // Single array built then anchored in place → local block index == final index.
     anchorBlocks(pageBlocks, -999, pool, opts.anchor, stats.anchor);
+    demoteEmptiedKvs(pageBlocks);
     const doc: DocModel = { blocks: pageBlocks, width: page.width, height: page.height };
     const uncertainty = buildLayer(doc);
     return { doc, stats, vlmMsUsed, uncertainty, verification: verifyPage({ doc, ocr, uncertainty }) };
