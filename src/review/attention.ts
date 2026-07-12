@@ -31,6 +31,7 @@ export type AttentionCategory =
   | 'conflict'
   | 'unverified-number'
   | 'omitted-number'
+  | 'uncertain-pair'
   | 'low-block'
   | 'low-line'
   | 'coverage-gap'
@@ -67,6 +68,7 @@ export const CATEGORY_LABEL: Record<AttentionCategory, string> = {
   conflict: 'Readings disagree',
   'unverified-number': 'Number not found in scan',
   'omitted-number': 'Possible missing number',
+  'uncertain-pair': 'Field pairing to confirm',
   'low-block': 'Low-confidence area',
   'low-line': 'Low-confidence line',
   'coverage-gap': 'Possible missed area',
@@ -77,6 +79,7 @@ const RANK: Record<AttentionCategory, number> = {
   conflict: 0,
   'unverified-number': 1,
   'omitted-number': 1,
+  'uncertain-pair': 2,
   'low-block': 2,
   'low-line': 3,
   'coverage-gap': 4,
@@ -172,6 +175,24 @@ export function buildAttention(
       });
     });
   }
+
+  // 2b. uncertain field pairings (graded by τ — same slider, low-block tier).
+  // The text may read perfectly; what's in doubt is WHICH label owns the value.
+  layer.blocks.forEach((b) => {
+    if (b.pairing === undefined || b.pairing >= tau) return;
+    items.push({
+      id: `pair:${b.blockIndex}`,
+      category: 'uncertain-pair',
+      rank: RANK['uncertain-pair'],
+      score: b.pairing,
+      box: b.box,
+      blockIndex: b.blockIndex,
+      lineIds: b.lineIds,
+      title: CATEGORY_LABEL['uncertain-pair'],
+      detail: 'Check that this label belongs with this value — the grouping was ambiguous on the page.',
+      graded: true,
+    });
+  });
 
   // 3. low-confidence blocks (graded by τ)
   layer.blocks.forEach((b) => {

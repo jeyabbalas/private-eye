@@ -15,6 +15,7 @@ export const SEVERITY: Record<AttentionCategory, 'attention' | 'caution'> = {
   conflict: 'attention',
   'unverified-number': 'attention',
   'omitted-number': 'attention',
+  'uncertain-pair': 'caution',
   'coverage-gap': 'attention',
   'low-block': 'caution',
   'low-line': 'caution',

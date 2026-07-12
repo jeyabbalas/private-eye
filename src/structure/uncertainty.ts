@@ -68,6 +68,10 @@ export interface BlockProvenance {
   lineIds: number[];
   /** Min char confidence over the block's source lines (lower = needs attention). */
   worst: number;
+  /** kv blocks only: confidence that label↔value is the RIGHT association
+   *  (structural claim, independent of character confidence). Feeds the
+   *  'uncertain-pair' attention category under the same τ slider. */
+  pairing?: number;
 }
 
 export type ReviewKind = 'replaced' | 'flagged' | 'dropped' | 'ambiguous' | 'split-joined' | 'disagree-text';

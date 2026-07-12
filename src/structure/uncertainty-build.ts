@@ -80,6 +80,16 @@ export function blockProvenanceByBox(doc: DocModel, lines: LineUncertainty[]): B
       const w = lu.chars.length ? Math.min(...lu.chars.map((c) => c.conf)) : lu.min;
       if (w < worst) worst = w;
     }
-    return { blockIndex, kind: b.kind, box: b.box, lineIds, worst: lineIds.length ? worst : 1 };
+    return {
+      blockIndex,
+      kind: b.kind,
+      box: b.box,
+      lineIds,
+      worst: lineIds.length ? worst : 1,
+      // Pairing confidence rides along block provenance so BOTH pipelines (E
+      // via buildRegionUncertainty, G via buildDocFromReplay) surface it
+      // without schema changes elsewhere.
+      ...(b.kind === 'kv' && b.pairConf !== undefined ? { pairing: b.pairConf } : {}),
+    };
   });
 }

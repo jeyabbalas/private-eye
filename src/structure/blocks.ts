@@ -5,7 +5,10 @@ export type Block =
   | { kind: 'heading'; depth: 1 | 2 | 3; text: string; box: BBox }
   | { kind: 'paragraph'; text: string; box: BBox }
   | { kind: 'listItem'; lead?: string; text: string; box: BBox }
-  | { kind: 'kv'; label: string; value: string; box: BBox }
+  /** `pairConf` = confidence that label↔value is the RIGHT association (pairing
+   *  is a structural claim over verbatim OCR tokens; the confidence never alters
+   *  the text). Absent for kv sources that carry no pairing signal. */
+  | { kind: 'kv'; label: string; value: string; box: BBox; pairConf?: number }
   | { kind: 'table'; cells: string[][]; box: BBox }
   | { kind: 'rule'; box: BBox };
 
