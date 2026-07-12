@@ -19,7 +19,9 @@ import { boxArea, boxCenterX, boxCenterY, boxIoU, boxWidth, hOverlapRatio, inter
 import { buildDocModel, clusterRows, rowPitch, type AssembleOptions } from './assemble.ts';
 import { buildLineSegments, wordLineHeight } from './fragments.ts';
 import { isRule, parseBullet, parseKv, type PageMetrics } from './classify.ts';
-import { detectFieldGrid } from './fieldgrid.ts';
+import { collectColonLabels } from './pairing/features.ts';
+import { interpretRegion, kvInterpretationToBlocks } from './pairing/interpret.ts';
+import { emptyLexicon, lexiconKey, type PageLexicon } from './pairing/types.ts';
 import { buildTable, firstCellIsHeaderWord } from './tables.ts';
 import { clusterByGap, median, modeRounded } from './util.ts';
 import type { Block, DocModel } from './blocks.ts';
@@ -306,6 +308,7 @@ export async function assembleTableRegion(
   region: Region,
   scales: PageScales,
   runSlanet: ((region: Region, lines: OcrLine[]) => Promise<TableCells | null>) | undefined,
+  lexicon?: PageLexicon,
 ): Promise<Block[]> {
   const segs = buildLineSegments(regionOcr(lines, ocr), scales.wordHeight);
   if (!segs.length) return [];
@@ -321,14 +324,17 @@ export async function assembleTableRegion(
   const headIsHeading = !!head && head.text.trim().split(/\s+/).length <= 8 && !/[.,;:]$/.test(head.text.trim());
   const bodyRows = headIsHeading ? rows.slice(1) : rows;
 
-  // Grid-vs-table discrimination, mirroring B's makeRegion precedence.
-  const grid = detectFieldGrid(bodyRows.flat(), m, 'left');
-  const looksTable = !grid || firstCellIsHeaderWord(bodyRows);
-  if (!looksTable && grid) {
+  // Grid-vs-table discrimination, mirroring B's makeRegion precedence: the
+  // unified interpreter scores kv/table/lines readings (with the layout
+  // model's table prior); a generic header word is still a hard table route.
+  const interp = interpretRegion(bodyRows.flat(), m, { tablePrior: true, lexicon });
+  if (interp.kind === 'kv' && !firstCellIsHeaderWord(bodyRows)) {
     const heading: Block[] = headIsHeading ? [{ kind: 'heading', depth: 2, text: head!.text.trim(), box: head!.box }] : [];
-    return [...heading, ...grid.blocks];
+    return [...heading, ...kvInterpretationToBlocks(interp)];
   }
 
+  // 'table' — and 'lines' too: the layout model called this region a table, so
+  // a lines verdict goes to SLANet rather than degrading to paragraph soup.
   const structure = runSlanet ? await runSlanet(region, lines) : null;
   if (usableStructure(structure)) {
     const cells = fillTableCells(structure, lines);
@@ -363,6 +369,35 @@ export async function buildDocModelFromRegions(
   const all: { region: Region; lines: OcrLine[] }[] = regions.map((region, i) => ({ region, lines: buckets[i]! }));
   const synthStart = all.length;
   for (const synth of synthesizeOrphanRegions(orphans, lineHeight)) all.push(synth);
+
+  // Page lexicon (weak repetition cue for the pairing interpreter): texts seen
+  // with a trailing colon anywhere on the page, plus first-row cells of the
+  // layout model's table regions (grid headers repeat as labels). Repetition
+  // means evidence from ELSEWHERE: a table region's own first row must not
+  // vouch for itself (it would circularly inflate its own header/table score),
+  // so each table region gets a lexicon built from the OTHER regions only.
+  const baseLexicon = emptyLexicon();
+  collectColonLabels(buildLineSegments(ocr, scales.wordHeight), baseLexicon);
+  const firstRowKeys = new Map<Region, Set<string>>();
+  for (const entry of all) {
+    if (kindOf(entry.region.label) !== 'table' || !entry.lines.length) continue;
+    const segs = buildLineSegments(regionOcr(entry.lines, ocr), scales.wordHeight);
+    const keys = new Set<string>();
+    for (const cell of clusterRows(segs, scales.lineHeight)[0] ?? []) {
+      const t = cell.text.trim();
+      if (t && t.split(/\s+/).length <= 4) keys.add(lexiconKey(t));
+    }
+    if (keys.size) firstRowKeys.set(entry.region, keys);
+  }
+  const lexiconExcluding = (self?: Region): PageLexicon => {
+    const lex: PageLexicon = { labels: new Set(baseLexicon.labels) };
+    for (const [region, keys] of firstRowKeys) {
+      if (region === self) continue;
+      for (const k of keys) lex.labels.add(k);
+    }
+    return lex;
+  };
+  const lexicon = lexiconExcluding();
 
   // Reading order over the combined set.
   let order: number[];
@@ -427,7 +462,7 @@ export async function buildDocModelFromRegions(
     }
     if (!lines.length) continue;
     if (kind === 'table') {
-      blocks.push(...(await assembleTableRegion(lines, ocr, region, scales, runSlanet)));
+      blocks.push(...(await assembleTableRegion(lines, ocr, region, scales, runSlanet, lexiconExcluding(region))));
       continue;
     }
     // A region that is still a single line after coalescing is an isolated
@@ -441,7 +476,7 @@ export async function buildDocModelFromRegions(
     }
     // text / imageish-with-legible-text (stamp convention): full within-region
     // assembly with heading classification disabled, at page-global scales.
-    const doc = buildDocModel(regionOcr(lines, ocr), { headings: false, metrics: scales, colAnchor: 'left' });
+    const doc = buildDocModel(regionOcr(lines, ocr), { headings: false, metrics: scales, colAnchor: 'left', lexicon });
     blocks.push(...doc.blocks);
   }
   return { blocks, width: ocr.width, height: ocr.height };
