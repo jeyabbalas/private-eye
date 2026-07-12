@@ -1,12 +1,15 @@
 /**
- * The confidence filter: a thin bar (sits above both panes) with the live "N spots
- * flagged" count, a sensitivity slider (τ), and a worst-first prev/next stepper.
- * Dragging the slider right lowers the bar for what counts as uncertain, so more is
- * flagged; the count updates live and the overlay + inline highlights re-shade —
- * without ever re-blitting the raster.
+ * The confidence filter: a compact cluster (right side of the filter bar) with a
+ * live flags chip — "3 flagged" — and a worst-first prev/next stepper. Clicking
+ * the chip opens a popover holding the sensitivity slider (τ): dragging right
+ * lowers the bar for what counts as uncertain, so more is flagged; the count
+ * updates live and the overlay + inline highlights re-shade — without ever
+ * re-blitting the raster. The slider is one persistent element re-parented into
+ * each popover, so its value and wiring survive across opens.
  */
 import { TAU_MAX, TAU_MIN } from './session.ts';
 import { attentionSummary } from './copy.ts';
+import { openPopover } from '../ui/menu.ts';
 
 export interface ThresholdHandle {
   readonly el: HTMLElement;
@@ -26,11 +29,24 @@ export function createThreshold(opts: ThresholdOptions): ThresholdHandle {
   const el = document.createElement('div');
   el.className = 'pe-threshold';
 
-  const count = document.createElement('div');
-  count.className = 'pe-threshold-count';
-  // Announce the changing "N spots flagged" tally to screen readers as τ moves.
-  count.setAttribute('aria-live', 'polite');
+  const flags = document.createElement('button');
+  flags.className = 'pe-flagchip';
+  flags.title = 'Adjust highlight sensitivity';
+  flags.setAttribute('aria-haspopup', 'dialog');
+  flags.setAttribute('aria-expanded', 'false');
+  const flagsText = document.createElement('span');
+  flagsText.className = 'pe-flagchip-text';
+  // Announce the changing "N flagged" tally to screen readers as τ moves.
+  flagsText.setAttribute('aria-live', 'polite');
+  const caret = document.createElement('span');
+  caret.className = 'pe-flagchip-caret';
+  caret.setAttribute('aria-hidden', 'true');
+  caret.textContent = '▾';
+  flags.append(flagsText, caret);
 
+  // The popover body: sensitivity slider + its hint, built once and re-parented.
+  const pop = document.createElement('div');
+  pop.className = 'pe-taupop';
   const sliderWrap = document.createElement('label');
   sliderWrap.className = 'pe-threshold-slider';
   const sliderLabel = document.createElement('span');
@@ -43,10 +59,18 @@ export function createThreshold(opts: ThresholdOptions): ThresholdHandle {
   slider.max = String(TAU_MAX);
   slider.step = '0.05';
   slider.value = String(opts.tau);
-  slider.title = 'Drag right to flag anything uncertain; left for only the shakiest';
   slider.setAttribute('aria-label', 'Highlight sensitivity');
   slider.addEventListener('input', () => opts.onTau(Number(slider.value)));
   sliderWrap.append(sliderLabel, slider);
+  const hint = document.createElement('div');
+  hint.className = 'pe-pop-hint';
+  hint.textContent = 'Drag right to flag anything uncertain; left for only the shakiest.';
+  pop.append(sliderWrap, hint);
+
+  flags.addEventListener('click', () => {
+    openPopover(flags, pop);
+    slider.focus();
+  });
 
   const steps = document.createElement('div');
   steps.className = 'pe-stepper';
@@ -54,13 +78,14 @@ export function createThreshold(opts: ThresholdOptions): ThresholdHandle {
   const next = stepBtn('›', 'Next flagged spot', () => opts.onNext());
   steps.append(prev, next);
 
-  el.append(count, sliderWrap, steps);
+  el.append(flags, steps);
 
   return {
     el,
     setCount(n) {
-      count.textContent = attentionSummary(n);
-      count.classList.toggle('pe-threshold-clear', n <= 0);
+      flagsText.textContent = n > 0 ? `${n} flagged` : 'All clear';
+      flags.classList.toggle('pe-flagchip-clear', n <= 0);
+      flags.setAttribute('aria-label', `${attentionSummary(n)} — adjust sensitivity`);
     },
     setStepEnabled(on) {
       prev.disabled = !on;

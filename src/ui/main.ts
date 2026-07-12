@@ -79,7 +79,9 @@ async function boot(): Promise<void> {
     // upload's run still loads the models on demand (the worker calls ensureE).
     const warmDeferred = meteredConnection();
     workspace = new Workspace(quick, caps, warmDeferred);
-    app.replaceChildren(buildHeader(), workspace.el);
+    // The workspace owns the bar: the landing band while empty, the compact
+    // work top bar once documents exist.
+    app.replaceChildren(workspace.barEl, workspace.el);
 
     if (warmDeferred) log.debug('Quick Read warm-up deferred (metered connection)');
     else quick.warm();

@@ -2,20 +2,32 @@
  * The review surface: the coordinator that turns one processed page into the full
  * review/correct experience — a zoomable scan beside the structured Markdown.
  *
- * Layout: a thin confidence filter spans both panes (verdict + sensitivity + a
+ * Layout: a thin confidence filter spans both panes (verdict + flags chip + a
  * worst-first stepper); below it the scan (zoom/pan, confidence overlay, region
- * draw) and the Markdown sit side by side and own the width. Review is inline:
- * each flagged spot is a highlight on the token plus a numbered book-tab in the
- * Markdown gutter, cross-lit with its scan region in both directions. Deep Read is
- * offered here, per page, for an exact-transcription result the heavier model might
- * resolve. The surface owns the page's transient resources and frees them on
- * destroy.
+ * draw) and the Markdown sit side by side with a draggable divider between them.
+ * Review is inline: each flagged spot is a highlight on the token plus a numbered
+ * book-tab in the Markdown gutter, cross-lit with its scan region in both
+ * directions. The scan head hosts an in-pane pager (read pages only, also on
+ * `[` / `]`); one keydown router on the surface drives pan/zoom/page/undo keys.
+ * Deep Read is offered here, per page, for an exact-transcription result the
+ * heavier model might resolve. The surface owns the page's transient resources
+ * and frees them on destroy.
  */
 import type { DocumentRecord, PageRecord } from '../orchestrate/types.ts';
 import { pageImageBlob } from '../orchestrate/raster.ts';
 import { markdownName, triggerDownload } from '../orchestrate/export.ts';
 import { log } from '../runtime/logger.ts';
 import { escapeHtml } from '../ui/progress.ts';
+import { showModal } from '../ui/modal.ts';
+import { openMenu } from '../ui/menu.ts';
+import {
+  ICON_CHEVRON_LEFT,
+  ICON_CHEVRON_RIGHT,
+  ICON_COPY,
+  ICON_DOWNLOAD,
+  ICON_ELLIPSIS,
+  ICON_MARK,
+} from '../ui/icons.ts';
 import type { QuickClient } from '../workers/client.ts';
 import type { BBox } from '../core/types.ts';
 import type { Block } from '../structure/blocks.ts';
@@ -24,6 +36,8 @@ import { createOverlay, type OverlayHandle } from './overlay.ts';
 import { createScanView, type ScanViewHandle } from './scan-view.ts';
 import { createThreshold, type ThresholdHandle } from './threshold.ts';
 import { createEditor, type BlockAnnotation, type EditorHandle } from './markdown-editor.ts';
+import { initSplit, type SplitHandle } from './split.ts';
+import { isEditableTarget, reviewKeyAction } from './keys.ts';
 import { baseUid, blockToMarkdown } from './corrections.ts';
 import { anchorUidFor, cropRegionToBlob } from './region-draw.ts';
 import { buildAnnotations } from './annotate.ts';
@@ -33,6 +47,13 @@ import { SAVED } from './copy.ts';
 
 type DrawState = 'idle' | 'drawing' | 'busy';
 
+export interface PageNav {
+  pageNo: number;
+  pageCount: number;
+  /** Step to the previous/next *read* page of this document. */
+  onNav: (dir: 1 | -1) => void;
+}
+
 export class ReviewSurface {
   readonly el: HTMLElement;
 
@@ -41,6 +62,7 @@ export class ReviewSurface {
   private scan: ScanViewHandle | null = null;
   private editor: EditorHandle | null = null;
   private threshold: ThresholdHandle | null = null;
+  private split: SplitHandle | null = null;
   private unsub: (() => void) | null = null;
 
   private image: HTMLImageElement | null = null;
@@ -53,11 +75,17 @@ export class ReviewSurface {
   private lastNeedsReview: boolean | null = null;
   private destroyed = false;
 
-  private undoBtn: HTMLButtonElement | null = null;
-  private resetBtn: HTMLButtonElement | null = null;
+  private drawState: DrawState = 'idle';
   private drawBtn: HTMLButtonElement | null = null;
-  private savedTag: HTMLElement | null = null;
-  private savedTimer: number | null = null;
+  private mdPane: HTMLElement | null = null;
+  private flashEl: HTMLElement | null = null;
+  private flashTimer: number | null = null;
+  private zoomLabel: HTMLButtonElement | null = null;
+  private zoomFit = true;
+  private pagerPrev: HTMLButtonElement | null = null;
+  private pagerNext: HTMLButtonElement | null = null;
+  private navPrevOk = false;
+  private navNextOk = false;
   private popClose: (() => void) | null = null;
 
   constructor(
@@ -68,12 +96,19 @@ export class ReviewSurface {
      *  unavailable (e.g. the page is already a Deep Read result). */
     private readonly onReadDeep: (() => void) | null = null,
     /** Report this page's live needs-review state back to the workspace so the
-     *  carousel tile + persisted status track the reviewer's activity and the τ
+     *  rail tile + persisted status track the reviewer's activity and the τ
      *  slider. Fires only when the boolean changes. */
     private readonly onReview: ((needsReview: boolean) => void) | null = null,
+    /** In-pane page navigation across this document's read pages (the scan-head
+     *  pager and the `[` / `]` keys). Null for single-page documents. */
+    private readonly pageNav: PageNav | null = null,
   ) {
     this.el = document.createElement('div');
     this.el.className = 'pe-review';
+    // Programmatic focus target so `[` / `]` keep working across page hops even
+    // before the async build lands (the rebuild otherwise drops focus to <body>).
+    this.el.tabIndex = -1;
+    this.el.addEventListener('keydown', this.onKeys);
     this.el.innerHTML = '<div class="pe-boot"><span class="pe-spin"></span></div>';
   }
 
@@ -111,9 +146,12 @@ export class ReviewSurface {
   destroy(): void {
     this.destroyed = true;
     this.closePopover();
-    if (this.savedTimer != null) clearTimeout(this.savedTimer);
+    if (this.flashTimer != null) clearTimeout(this.flashTimer);
+    this.el.removeEventListener('keydown', this.onKeys);
     this.unsub?.();
     this.unsub = null;
+    this.split?.destroy();
+    this.split = null;
     this.scan?.destroy();
     this.scan = null;
     this.overlay?.destroy();
@@ -124,6 +162,19 @@ export class ReviewSurface {
       URL.revokeObjectURL(this.imgUrl);
       this.imgUrl = null;
     }
+  }
+
+  /** Update the pager's reach (wired by the workspace as sibling pages finish). */
+  setPageNav(canPrev: boolean, canNext: boolean): void {
+    this.navPrevOk = canPrev;
+    this.navNextOk = canNext;
+    if (this.pagerPrev) this.pagerPrev.disabled = !canPrev;
+    if (this.pagerNext) this.pagerNext.disabled = !canNext;
+  }
+
+  /** Hand keyboard focus to the scan viewport (or the surface until it builds). */
+  focusScan(): void {
+    (this.scan?.el ?? this.el).focus();
   }
 
   // ---------- build ----------
@@ -150,7 +201,12 @@ export class ReviewSurface {
       : null;
     this.scan =
       image && this.overlay
-        ? createScanView({ content: this.overlay.el, pageWidth: session.width, pageHeight: session.height })
+        ? createScanView({
+            content: this.overlay.el,
+            pageWidth: session.width,
+            pageHeight: session.height,
+            onTransform: (scale, fit) => this.onScanTransform(scale, fit),
+          })
         : null;
 
     this.editor = createEditor({
@@ -161,7 +217,7 @@ export class ReviewSurface {
       onItemHover: (id) => this.onItemHover(id),
     });
 
-    // Filter bar (spans both panes): verdict + sensitivity + stepper.
+    // Filter bar (spans both panes): verdict + flags chip + stepper.
     const filterbar = document.createElement('div');
     filterbar.className = 'pe-filterbar';
     filterbar.append(this.buildVerdictChip(session), this.threshold.el);
@@ -182,12 +238,18 @@ export class ReviewSurface {
     const mdPane = document.createElement('section');
     mdPane.className = 'pe-pane pe-pane-md';
     mdPane.append(this.buildMdHead(session), this.editor.el);
+    this.mdPane = mdPane;
 
     const panes = document.createElement('div');
     panes.className = 'pe-panes';
     panes.append(scanPane, mdPane);
+    this.split = initSplit(panes, scanPane, { storageKey: 'pe.review.split', minPx: 300 });
 
     this.el.replaceChildren(filterbar, panes);
+    this.setPageNav(this.navPrevOk, this.navNextOk);
+    // If focus was parked on the surface (a pager hop mid-build), upgrade it to
+    // the scan viewport so the pan/zoom keys work immediately.
+    if (document.activeElement === this.el && this.scan) this.scan.el.focus();
   }
 
   private buildVerdictChip(session: ReviewSession): HTMLElement {
@@ -200,54 +262,75 @@ export class ReviewSurface {
     return chip;
   }
 
+  /** Scan-pane head: `‹ page 3 / 12 ›` pager (read pages only; hidden for 1-page
+   *  docs) · zoom cluster with a live Fit/percent label · region-draw icon. */
   private buildScanHead(): HTMLElement {
     const head = document.createElement('div');
     head.className = 'pe-pane-head';
 
-    const title = document.createElement('span');
-    title.className = 'pe-pane-title';
-    title.textContent = `${this.doc.name} · page ${this.page.pageNo}`;
-    title.title = title.textContent;
+    if (this.pageNav && this.pageNav.pageCount > 1) {
+      const pager = document.createElement('div');
+      pager.className = 'pe-pager';
+      this.pagerPrev = svgBtn(ICON_CHEVRON_LEFT, 'Previous read page ( [ )', () => {
+        if (this.navPrevOk) this.pageNav?.onNav(-1);
+      });
+      this.pagerNext = svgBtn(ICON_CHEVRON_RIGHT, 'Next read page ( ] )', () => {
+        if (this.navNextOk) this.pageNav?.onNav(1);
+      });
+      const label = document.createElement('span');
+      label.className = 'pe-pager-label';
+      label.textContent = `page ${this.pageNav.pageNo} / ${this.pageNav.pageCount}`;
+      label.title = this.doc.name;
+      pager.append(this.pagerPrev, label, this.pagerNext);
+      head.appendChild(pager);
+    }
 
     const tools = document.createElement('div');
     tools.className = 'pe-pane-tools';
     if (this.scan) {
       const zoom = document.createElement('div');
       zoom.className = 'pe-zoom';
+      this.zoomLabel = iconBtn('Fit', 'Toggle fit ↔ 100% ( 0 / 1 )', () => {
+        if (this.zoomFit) this.scan?.actual();
+        else this.scan?.fit();
+      });
+      this.zoomLabel.classList.add('pe-zoom-label');
       zoom.append(
-        iconBtn('−', 'Zoom out', () => this.scan?.zoomBy(1 / 1.25)),
-        iconBtn('Fit', 'Fit to width', () => this.scan?.fit()),
-        iconBtn('100%', 'Actual size', () => this.scan?.actual()),
-        iconBtn('+', 'Zoom in', () => this.scan?.zoomBy(1.25)),
+        iconBtn('−', 'Zoom out ( − )', () => this.scan?.zoomBy(1 / 1.25)),
+        this.zoomLabel,
+        iconBtn('+', 'Zoom in ( + )', () => this.scan?.zoomBy(1.25)),
       );
       tools.appendChild(zoom);
     }
     if (this.overlay) {
-      this.drawBtn = iconBtn('Mark a missed area', 'Draw a box over text the read missed', () =>
+      this.drawBtn = svgBtn(ICON_MARK, 'Mark a missed area — draw a box over text the read missed', () =>
         this.startRegionDraw(),
       );
-      this.drawBtn.classList.add('pe-pane-btn');
       tools.appendChild(this.drawBtn);
     }
 
-    head.append(title, tools);
+    head.appendChild(tools);
     return head;
   }
 
+  /** Markdown-pane head: read-by badge · Deep Read CTA · copy/download icons ·
+   *  an overflow menu holding undo / revert-all / the autosave note. */
   private buildMdHead(session: ReviewSession): HTMLElement {
     const head = document.createElement('div');
     head.className = 'pe-pane-head';
 
     const badge = document.createElement('span');
     badge.className = 'pe-readby';
-    const readByText =
+    const readByFull =
       session.pipeline === 'G'
         ? 'Read by Deep Read'
         : session.fellBack
-          ? 'Deep Read → exact transcription'
+          ? 'Deep Read fell back to the exact transcription'
           : 'Read by Quick Read';
-    badge.innerHTML = `<span class="pe-readby-dot" aria-hidden="true"></span>${escapeHtml(readByText)}`;
-    badge.title = readByText;
+    const readByShort =
+      session.pipeline === 'G' ? 'Deep Read' : session.fellBack ? 'Deep Read → exact' : 'Quick Read';
+    badge.innerHTML = `<span class="pe-readby-dot" aria-hidden="true"></span>${escapeHtml(readByShort)}`;
+    badge.title = readByFull;
 
     const tools = document.createElement('div');
     tools.className = 'pe-pane-tools';
@@ -262,29 +345,87 @@ export class ReviewSurface {
       tools.appendChild(deep);
     }
 
-    const copy = iconBtn('Copy', 'Copy this page’s Markdown', () => {
+    const copy = svgBtn(ICON_COPY, 'Copy this page’s Markdown', () => {
       void navigator.clipboard?.writeText(session.markdown).then(() => this.flashStatus('Copied.'));
     });
-    const download = iconBtn('Download', 'Download this page’s Markdown', () => {
+    const download = svgBtn(ICON_DOWNLOAD, 'Download this page’s Markdown', () => {
       const name = `${markdownName(this.doc).replace(/\.md$/, '')}.p${this.page.pageNo}.md`;
       triggerDownload(new Blob([session.markdown], { type: 'text/markdown' }), name);
     });
-    this.undoBtn = iconBtn('Undo', 'Undo the last change', () => session.undo());
-    this.resetBtn = iconBtn('Revert all', 'Revert every change on this page', () => session.reset());
-    this.undoBtn.disabled = true;
-    this.resetBtn.disabled = true;
-    copy.classList.add('pe-pane-btn');
-    download.classList.add('pe-pane-btn');
-    this.undoBtn.classList.add('pe-pane-btn');
-    this.resetBtn.classList.add('pe-pane-btn');
+    const more = svgBtn(ICON_ELLIPSIS, 'More actions', () => {
+      const edited = session.state().edited; // live at open, so states are honest
+      openMenu(more, [
+        { label: 'Undo last change', disabled: !edited, onSelect: () => session.undo() },
+        { label: 'Revert all changes…', danger: true, disabled: !edited, onSelect: () => this.confirmRevert(session) },
+        { separator: true },
+        { note: 'Edits save automatically' },
+      ]);
+    });
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
 
-    this.savedTag = document.createElement('span');
-    this.savedTag.className = 'pe-saved-tag';
-    this.savedTag.textContent = 'Edits save automatically';
-
-    tools.append(copy, download, this.undoBtn, this.resetBtn, this.savedTag);
+    tools.append(copy, download, more);
     head.append(badge, tools);
     return head;
+  }
+
+  private confirmRevert(session: ReviewSession): void {
+    showModal({
+      title: 'Revert all changes?',
+      body: 'This removes every correction made on this page and restores the original reading. It cannot be undone.',
+      actions: [
+        { label: 'Revert all', primary: true, onClick: () => session.reset() },
+        { label: 'Cancel' },
+      ],
+    });
+  }
+
+  // ---------- keyboard ----------
+
+  private readonly onKeys = (e: KeyboardEvent): void => {
+    const action = reviewKeyAction(
+      e.key,
+      { shift: e.shiftKey, ctrl: e.ctrlKey, meta: e.metaKey, alt: e.altKey },
+      {
+        inEditable: isEditableTarget(e.target),
+        drawing: this.drawState === 'busy' || this.rubberBandLive(),
+        scanFocused: this.scan != null && e.target === this.scan.el,
+      },
+    );
+    if (!action) return;
+    e.preventDefault();
+    switch (action.kind) {
+      case 'pan':
+        this.scan?.panBy(action.dx, action.dy);
+        break;
+      case 'pan-page':
+        if (this.scan) this.scan.panBy(0, action.dir * Math.max(80, Math.round(this.scan.el.clientHeight * 0.85)));
+        break;
+      case 'pan-edge':
+        this.scan?.panEdge(action.edge);
+        break;
+      case 'zoom':
+        this.scan?.zoomBy(action.factor);
+        break;
+      case 'fit':
+        this.scan?.fit();
+        break;
+      case 'actual':
+        this.scan?.actual();
+        break;
+      case 'page':
+        if (action.dir === -1 ? this.navPrevOk : this.navNextOk) this.pageNav?.onNav(action.dir);
+        break;
+      case 'undo':
+        this.session?.undo();
+        break;
+    }
+  };
+
+  /** True while a region-draw rubber band is actively being dragged. */
+  private rubberBandLive(): boolean {
+    const rect = this.el.querySelector<HTMLElement>('.pe-draw-rect');
+    return !!rect && rect.style.display !== 'none';
   }
 
   // ---------- reactive apply ----------
@@ -302,15 +443,19 @@ export class ReviewSurface {
     this.editor?.setAnnotations(anns);
     this.threshold?.setCount(s.attention.length);
     this.threshold?.setStepEnabled(s.attention.length > 0);
-    // Keep the carousel indicator in sync: red iff the worklist is non-empty.
+    // Keep the rail indicator in sync: red iff the worklist is non-empty.
     const needs = s.attention.length > 0;
     if (needs !== this.lastNeedsReview) {
       this.lastNeedsReview = needs;
       this.onReview?.(needs);
     }
     this.overlay?.setTau(s.tau);
-    if (this.undoBtn) this.undoBtn.disabled = !s.edited;
-    if (this.resetBtn) this.resetBtn.disabled = !s.edited;
+  }
+
+  /** Keep the zoom label honest: "Fit" at the fit scale, else a live percent. */
+  private onScanTransform(scale: number, fitScale: number): void {
+    this.zoomFit = Math.abs(scale - fitScale) < 0.005;
+    if (this.zoomLabel) this.zoomLabel.textContent = this.zoomFit ? 'Fit' : `${Math.round(scale * 100)}%`;
   }
 
   // ---------- worklist navigation + cross-highlight ----------
@@ -457,7 +602,7 @@ export class ReviewSurface {
   // ---------- region draw + on-demand OCR ----------
 
   private startRegionDraw(): void {
-    if (!this.overlay || this.drawBtn?.disabled) return;
+    if (!this.overlay || this.drawState !== 'idle') return;
     this.setDrawState('drawing');
     this.overlay.beginDraw((box) => void this.onRegionDrawn(box));
   }
@@ -506,12 +651,28 @@ export class ReviewSurface {
     }
   }
 
+  /** Reflect the draw lifecycle on the icon button and the floating viewport
+   *  hint chip (armed: instructions; busy: progress) — never via button text. */
   private setDrawState(state: DrawState): void {
-    if (!this.drawBtn) return;
-    this.drawBtn.classList.toggle('pe-btn-active', state === 'drawing');
-    this.drawBtn.disabled = state !== 'idle';
-    this.drawBtn.textContent =
-      state === 'drawing' ? 'Draw a box — Esc to cancel' : state === 'busy' ? 'Reading the area…' : 'Mark a missed area';
+    this.drawState = state;
+    if (this.drawBtn) {
+      this.drawBtn.classList.toggle('pe-btn-active', state === 'drawing');
+      this.drawBtn.classList.toggle('pe-btn-busy', state === 'busy');
+      this.drawBtn.disabled = state !== 'idle';
+    }
+    const host = this.scan?.el;
+    if (!host) return;
+    let hint = host.querySelector<HTMLElement>('.pe-scanhint');
+    if (state === 'idle') {
+      hint?.remove();
+      return;
+    }
+    if (!hint) {
+      hint = document.createElement('div');
+      hint.className = 'pe-scanhint';
+      host.appendChild(hint);
+    }
+    hint.textContent = state === 'drawing' ? 'Drag a box over the missed text — Esc cancels' : 'Reading the area…';
   }
 
   // ---------- helpers ----------
@@ -520,16 +681,21 @@ export class ReviewSurface {
     this.flashStatus(SAVED);
   }
 
-  /** Briefly show a status message in the toolbar tag, then restore the hint. */
+  /** Briefly float a status chip at the Markdown pane's top-right, then fade. */
   private flashStatus(msg: string): void {
-    if (this.destroyed || !this.savedTag) return;
-    this.savedTag.textContent = msg;
-    this.savedTag.classList.add('pe-saved-on');
-    if (this.savedTimer != null) clearTimeout(this.savedTimer);
-    this.savedTimer = window.setTimeout(() => {
-      if (!this.savedTag) return;
-      this.savedTag.classList.remove('pe-saved-on');
-      this.savedTag.textContent = 'Edits save automatically';
+    if (this.destroyed || !this.mdPane) return;
+    if (!this.flashEl) {
+      this.flashEl = document.createElement('div');
+      this.flashEl.className = 'pe-pane-flash';
+      this.flashEl.setAttribute('role', 'status');
+      this.mdPane.appendChild(this.flashEl);
+    }
+    this.flashEl.textContent = msg;
+    this.flashEl.classList.add('pe-pane-flash-on');
+    if (this.flashTimer != null) clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
+      this.flashEl?.classList.remove('pe-pane-flash-on');
+      this.flashTimer = null;
     }, 1600);
   }
 
@@ -549,6 +715,16 @@ function iconBtn(label: string, title: string, onClick: () => void): HTMLButtonE
   const b = document.createElement('button');
   b.className = 'pe-btn';
   b.textContent = label;
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function svgBtn(icon: string, title: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.className = 'pe-iconbtn';
+  b.innerHTML = icon;
   b.title = title;
   b.setAttribute('aria-label', title);
   b.addEventListener('click', onClick);

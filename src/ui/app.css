@@ -17,7 +17,8 @@
   --caution: #9a6a00;
   --ok: #1f7a3d;
   --radius: 10px;
-  --doc-w: 300px; /* fixed document-group width in the carousel (~4 page tiles + a peek) */
+  --topbar-h: 52px; /* compact work top bar */
+  --rail-w: 208px; /* docked document rail */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.06);
   --wordmark: "Georgia", "Iowan Old Style", "Times New Roman", serif;
   --mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
@@ -46,7 +47,7 @@ body {
   flex-direction: column;
 }
 
-/* ---------- Header band ---------- */
+/* ---------- Header band (landing / capability gate) ---------- */
 .pe-header {
   display: flex;
   align-items: center;
@@ -124,50 +125,66 @@ body {
 }
 
 .pe-github img {
-  width: 44px;
-  height: 44px;
   display: block;
 }
 
-/* ---------- Main work area ----------
-   A full-width, full-height flex column: a thin app bar, a thin carousel, then
-   the review host fills the rest so the scan + Markdown panes own the width and
-   scroll internally rather than the page scrolling. */
-.pe-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 12px 16px 16px;
-  width: 100%;
-}
-
-.pe-boot {
-  margin: auto;
-  text-align: center;
-  color: var(--muted);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
-
-/* ---------- App bar (thin status + global actions) ---------- */
-.pe-appbar {
+/* ---------- Work top bar (compact, replaces the band once documents exist) ----------
+   Light-on-dark via contextual overrides so button() call sites keep their
+   classes: transparent-bordered .pe-btn, paper-on-ink primary, dark chip /
+   progress / run-light variants. */
+.pe-topbar {
   display: flex;
   align-items: center;
-  gap: 12px 16px;
-  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 12px;
+  height: var(--topbar-h);
+  background: var(--header-bg);
+  color: var(--header-ink);
   flex: none;
-  padding: 8px 12px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08);
 }
 
+.pe-topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+}
+
+.pe-topbar-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--paper);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: none;
+}
+
+.pe-topbar-logo img {
+  width: 99%;
+  height: 99%;
+  object-fit: contain;
+  display: block;
+}
+
+.pe-topbar-name {
+  font-family: var(--wordmark);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+/* status line + slim progress, stacked in the bar's flexible middle */
 .pe-run {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
 }
 
 .pe-runline {
@@ -177,17 +194,17 @@ body {
   min-width: 0;
 }
 
-/* The running-mode light: grey when idle, ink + pulsing while a page is read. */
+/* The running-mode light: dim when idle, paper + pulsing while a page is read. */
 .pe-runlight {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--line-strong);
+  background: rgba(255, 255, 255, 0.28);
   flex: none;
 }
 
 .pe-runlight-on {
-  background: var(--ink);
+  background: var(--paper);
   animation: pe-pulse 1.4s ease-in-out infinite;
 }
 
@@ -200,37 +217,127 @@ body {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: var(--ink);
+  color: var(--header-ink);
   flex: none;
 }
 
 .pe-runtext {
-  font-size: 13px;
-  color: var(--ink-soft);
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.78);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* the detail line, inlined as a dimmer tail of the run line */
 .pe-runsub {
   font-size: 11.5px;
-  color: var(--faint);
-  margin-top: 2px;
+  color: var(--header-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 0 1 auto;
 }
 
-.pe-appbar .pe-progress {
-  flex: 0 1 200px;
-  height: 6px;
+.pe-topbar .pe-progress {
+  height: 3px;
+  max-width: 320px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
 }
 
-.pe-appbar-actions {
+.pe-topbar .pe-progress-fill {
+  background: var(--paper);
+}
+
+.pe-topbar-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: none;
+}
+
+.pe-topbar .pe-btn {
+  font-size: 12.5px;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--header-ink);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.pe-topbar .pe-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.pe-topbar .pe-btn:disabled {
+  opacity: 0.4;
+}
+
+.pe-topbar .pe-btn-primary {
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--paper);
+}
+
+.pe-topbar .pe-btn-primary:hover:not(:disabled) {
+  background: #e8e8ea;
+  border-color: #e8e8ea;
+}
+
+.pe-topbar .pe-chip-deep {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.22);
+  color: var(--header-muted);
+}
+
+.pe-topbar .pe-chip-deep:hover {
+  color: var(--header-ink);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.pe-topbar .pe-iconbtn {
+  color: var(--header-muted);
+}
+
+.pe-topbar .pe-iconbtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--header-ink);
+  border-color: transparent;
+}
+
+.pe-topbar .pe-github {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+/* ---------- Main work area ----------
+   A full-width row: the document rail on the left, then the review host fills
+   the rest so the scan + Markdown panes own the width and scroll internally
+   rather than the page scrolling. Empty state falls back to a padded column. */
+.pe-main {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.pe-main-empty {
+  flex-direction: column;
+  padding: 12px 16px 16px;
+}
+
+.pe-boot {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
 }
 
 .pe-chip-deep {
@@ -250,63 +357,56 @@ body {
   border-color: var(--line-strong);
 }
 
-/* ---------- Document carousel (thin filmstrip) ---------- */
-.pe-carousel {
+/* ---------- Document rail (collapsible left sidebar) ---------- */
+.pe-rail {
   flex: none;
-  display: flex;
-  align-items: flex-end;
-  gap: 20px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 10px 12px;
-  margin-top: 10px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.pe-cargroup {
-  position: relative;
-  flex: none;
-  max-width: var(--doc-w);
+  width: var(--rail-w);
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  background: var(--paper);
+  overflow: hidden;
+  transition: width 0.18s ease;
 }
 
-/* Faint, elegant divider sitting in the gap to the right of each document group
- * (so it also separates the last document from the "+" add tile). Softly faded
- * at top and bottom rather than a hard full-height rule. */
-.pe-cargroup::after {
-  content: "";
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  right: -10px; /* mid-gap; .pe-carousel gap is 20px */
-  width: 1px;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    var(--line) 18%,
-    var(--line) 82%,
-    transparent
-  );
-  pointer-events: none;
+/* Fixed-width inner column: collapsing the rail slides content out of the
+   clipped box rather than reflowing it. Carries the rail's right border so the
+   hairline slides away with it. */
+.pe-rail-scroll {
+  width: var(--rail-w);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--line);
+  padding-bottom: 12px;
 }
 
-.pe-cargroup-head {
+.pe-rail-doc {
+  padding: 0 10px 12px;
+}
+
+.pe-rail-doc + .pe-rail-doc {
+  border-top: 1px solid var(--line);
+}
+
+.pe-raildoc-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: var(--doc-w);
+  background: var(--paper);
+  padding: 9px 0 7px;
 }
 
-.pe-cargroup-titles {
+.pe-raildoc-titles {
   flex: 1;
   min-width: 0;
 }
 
-.pe-cargroup-name {
+.pe-raildoc-name {
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -314,7 +414,7 @@ body {
   text-overflow: ellipsis;
 }
 
-.pe-cargroup-rollup {
+.pe-raildoc-rollup {
   font-size: 10.5px;
   color: var(--faint);
   white-space: nowrap;
@@ -322,17 +422,8 @@ body {
   text-overflow: ellipsis;
 }
 
-/* Always-visible "N pages" cue, so it's clear a fixed-width group holds more
- * pages than fit. Shown only for multi-page documents. */
-.pe-cargroup-count {
-  flex: none;
-  font: 10.5px/1 var(--mono);
-  color: var(--faint);
-  white-space: nowrap;
-}
-
-/* Per-document actions stay out of the way until the group is hovered/focused. */
-.pe-cargroup-actions {
+/* Per-document actions stay out of the way until hovered or focused. */
+.pe-raildoc-actions {
   display: flex;
   gap: 2px;
   flex: none;
@@ -340,93 +431,24 @@ body {
   transition: opacity 0.12s;
 }
 
-.pe-cargroup:hover .pe-cargroup-actions,
-.pe-cargroup:focus-within .pe-cargroup-actions {
+.pe-rail-doc:hover .pe-raildoc-actions,
+.pe-rail-doc:focus-within .pe-raildoc-actions {
   opacity: 1;
 }
 
-/* Positioning + stacking context for the page-nav chevrons that overlay the tile
- * strip, so they sit above the (positioned) thumbnails and receive their clicks. */
-.pe-cartiles-wrap {
-  position: relative;
-  isolation: isolate;
-}
-
-.pe-cartiles {
-  display: flex;
-  gap: 8px;
-  max-width: var(--doc-w);
-  overflow: hidden; /* clip extra pages; paged via JS only -> no scroll-gesture conflict with the carousel */
-  scroll-behavior: smooth;
-  /* Edge fades signal there are more pages; widths are toggled in JS by scroll
-   * position (0px on a side = no fade, e.g. at that end or for short docs). */
-  --fade-l: 0px;
-  --fade-r: 0px;
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent 0,
-    #000 var(--fade-l),
-    #000 calc(100% - var(--fade-r)),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent 0,
-    #000 var(--fade-l),
-    #000 calc(100% - var(--fade-r)),
-    transparent 100%
-  );
-}
-
-/* Page-nav chevrons: revealed on hover/focus, like the per-document actions. */
-.pe-carnav {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 1; /* above the positioned tile thumbnails so clicks hit the chevron */
-  width: 22px;
-  height: 22px;
+.pe-rail-thumbs {
   display: grid;
-  place-items: center;
-  border-radius: 50%;
-  border: 1px solid var(--line-strong);
-  background: var(--paper);
-  color: var(--ink-soft);
-  cursor: pointer;
-  opacity: 0;
-  box-shadow: var(--shadow);
-  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
-}
-
-.pe-carnav-prev {
-  left: -4px;
-}
-
-.pe-carnav-next {
-  right: -4px;
-}
-
-.pe-cartiles-wrap:hover .pe-carnav,
-.pe-cargroup:focus-within .pe-carnav {
-  opacity: 1;
-}
-
-.pe-carnav:hover {
-  border-color: var(--ink);
-  color: var(--ink);
-}
-
-.pe-carnav[hidden] {
-  display: none;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .pe-tile {
-  flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
-  width: 60px;
+  width: 100%;
+  min-width: 0;
   padding: 4px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -446,8 +468,8 @@ body {
 
 .pe-tile-fig {
   position: relative;
-  width: 52px;
-  height: 66px;
+  width: 100%;
+  aspect-ratio: 3 / 4;
   border-radius: 5px;
   border: 1px solid var(--line-strong);
   background: var(--bg);
@@ -503,33 +525,51 @@ body {
   font-weight: 600;
 }
 
-.pe-tile-add {
-  flex: none;
-  align-self: center; /* center the "+" in the carousel height; docs stay bottom-aligned */
-  width: 52px;
-  height: 66px;
+.pe-rail-add {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 12px 10px 0;
+  padding: 9px 0;
   border: 1px dashed var(--line-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   background: none;
   color: var(--muted);
-  font-size: 22px;
+  font: inherit;
+  font-size: 12.5px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
 
-.pe-tile-add:hover {
+.pe-rail-add:hover {
   border-color: var(--ink);
   color: var(--ink);
   background: var(--bg);
 }
 
+.pe-rail-scrim {
+  display: none;
+}
+
+/* Docked collapse (desktop only — below 881px the rail is an overlay drawer,
+   so the two mechanisms never fight). */
+@media (min-width: 881px) {
+  .pe-rail.pe-rail-collapsed {
+    width: 0;
+    visibility: hidden;
+    /* hide (dropping tab stops / hit-testing) only after the width transition,
+       so the content visibly slides out */
+    transition: width 0.18s ease, visibility 0s linear 0.18s;
+  }
+}
+
 /* ---------- Review host (fills the rest) ---------- */
 .pe-review-host {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  margin-top: 10px;
   display: flex;
   flex-direction: column;
+  padding: 12px 16px 16px;
 }
 
 .pe-review-host > .pe-viewer-empty {
@@ -583,6 +623,10 @@ body {
 .pe-btn {
   font: inherit;
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   padding: 7px 14px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -590,6 +634,21 @@ body {
   color: var(--ink);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
+}
+
+/* .pe-btn sets its own display, which would defeat the UA's [hidden] rule —
+   keep the hidden attribute (Stop while idle, the deep chip) authoritative. */
+.pe-btn[hidden] {
+  display: none;
+}
+
+.pe-btn svg {
+  flex: none;
+  display: block;
+}
+
+.pe-btn-label {
+  white-space: nowrap;
 }
 
 .pe-btn:hover:not(:disabled) {
@@ -612,16 +671,57 @@ body {
   background: #000;
 }
 
+.pe-iconbtn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.pe-iconbtn:hover {
+  background: var(--bg);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.pe-iconbtn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Armed region-draw (and other latched icon states) stays fully readable even
+   while the button is disabled against re-entry. */
+.pe-iconbtn.pe-btn-active,
+.pe-iconbtn.pe-btn-active:hover {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+  opacity: 1;
+}
+
+.pe-iconbtn.pe-btn-busy {
+  opacity: 1;
+  color: var(--muted);
+  animation: pe-pulse 1.4s ease-in-out infinite;
+}
+
 /* ---------- Keyboard focus (a11y) ----------
    One visible ring for every keyboard-focused control; mouse/touch focus stays
    ring-free via :focus-visible. The ring sits 2px off the element so it reads on
    both light and dark (primary) buttons against the light page; inside the dark
-   header it switches to the light ink. */
+   header/top bar it switches to the light ink. */
 :focus-visible {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
-.pe-header :focus-visible {
+.pe-header :focus-visible,
+.pe-topbar :focus-visible {
   outline-color: var(--header-ink);
 }
 
@@ -762,51 +862,6 @@ body {
   clip: rect(0 0 0 0);
 }
 
-/* ---------- Result card (single-image flow) ---------- */
-.pe-card {
-  display: grid;
-  grid-template-columns: minmax(240px, 380px) 1fr;
-  gap: 20px;
-  align-items: start;
-  width: 100%;
-}
-
-.pe-card-left {
-  position: sticky;
-  top: 20px;
-}
-
-.pe-preview-img {
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
-  display: block;
-}
-
-.pe-result-right {
-  min-width: 0;
-}
-
-.pe-toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.pe-output {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--paper);
-  padding: 16px 18px;
-  max-height: 72vh;
-  overflow: auto;
-}
-
-.pe-card .pe-boot {
-  align-self: center;
-}
-
 /* ---------- Rendered markdown ---------- */
 .pe-rendered {
   line-height: 1.6;
@@ -873,45 +928,13 @@ body {
   margin: 16px 0;
 }
 
-@media (max-width: 720px) {
-  .pe-card {
-    grid-template-columns: 1fr;
-  }
-
-  .pe-card-left {
-    position: static;
-  }
-}
-
-/* ---------- Document manager (Phase 2) ---------- */
+/* ---------- Document manager ---------- */
 .pe-main.pe-drag {
   outline: 2px dashed var(--ink-soft);
-  outline-offset: -10px;
+  outline-offset: -6px;
   border-radius: var(--radius);
 }
 
-/* status bar */
-/* document list */
-.pe-iconbtn {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-
-.pe-iconbtn:hover {
-  background: var(--bg);
-  color: var(--ink);
-  border-color: var(--line);
-}
-
-/* page chips */
 .pe-spin-sm {
   width: 10px;
   height: 10px;
@@ -928,22 +951,7 @@ body {
   background: var(--paper);
 }
 
-/* ---------- Review surface (Phase 3) ---------- */
-/* verdict banner */
-/* control band: threshold + toolbar */
-.pe-saved-tag {
-  font-size: 11.5px;
-  color: var(--faint);
-  transition: color 0.2s;
-}
-
-.pe-saved-tag.pe-saved-on {
-  color: var(--ok);
-  font-weight: 600;
-}
-
-/* two-column body: overlay (sticky) | worklist + editor */
-/* confidence overlay */
+/* ---------- Confidence overlay ---------- */
 .pe-overlay {
   position: relative;
   width: 100%;
@@ -1016,7 +1024,7 @@ body {
   border-color: var(--ink);
 }
 
-/* attention panel */
+/* attention popover buttons */
 .pe-att-btn {
   font: inherit;
   font-size: 11.5px;
@@ -1038,6 +1046,11 @@ body {
   background: var(--ink);
   color: var(--paper);
   border-color: var(--ink);
+}
+
+.pe-att-btn-primary:hover {
+  background: #000;
+  border-color: #000;
 }
 
 /* block-linked markdown editor */
@@ -1147,21 +1160,7 @@ body {
   margin-top: 6px;
 }
 
-/* ---------- Deep Read (Phase 5) ---------- */
-/* reading-depth toggle */
-/* "use scan reading" conflict resolver */
-.pe-att-btn-primary {
-  background: var(--ink);
-  color: var(--paper);
-  border-color: var(--ink);
-}
-
-.pe-att-btn-primary:hover {
-  background: #000;
-  border-color: #000;
-}
-
-/* Deep Read opt-in dialog */
+/* ---------- Deep Read opt-in dialog ---------- */
 .pe-deep-consent p {
   margin: 0 0 12px;
   color: var(--ink-soft);
@@ -1204,13 +1203,14 @@ body {
 }
 
 /* ====================================================================== */
-/* Reworked review surface: zoomable scan | Markdown, inline review.       */
+/* Review surface: zoomable scan | Markdown, inline review.               */
 /* ====================================================================== */
 .pe-review {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  outline: none;
 }
 
 /* ---------- Confidence filter (spans both panes) ---------- */
@@ -1220,7 +1220,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 16px;
-  padding: 8px 12px;
+  padding: 7px 12px;
   margin-bottom: 10px;
   background: var(--paper);
   border: 1px solid var(--line);
@@ -1256,22 +1256,44 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 16px;
+  gap: 10px;
   min-width: 0;
 }
 
-.pe-threshold-count {
-  font-size: 12.5px;
+/* The flags chip: live count, opens the sensitivity popover. */
+.pe-flagchip {
+  font: inherit;
+  font-size: 12px;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--paper);
   color: var(--attention);
-  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
 }
 
-.pe-threshold-count.pe-threshold-clear {
+.pe-flagchip:hover {
+  background: var(--bg);
+  border-color: var(--ink-soft);
+}
+
+.pe-flagchip.pe-flagchip-clear {
   color: var(--ok);
   font-weight: 500;
 }
 
+.pe-flagchip-caret {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1;
+}
+
+/* Sensitivity slider (lives in the flags-chip popover) */
 .pe-threshold-slider {
   display: flex;
   align-items: center;
@@ -1285,10 +1307,22 @@ body {
 }
 
 .pe-slider {
-  width: 150px;
-  max-width: 30vw;
+  width: 170px;
   accent-color: var(--ink);
   cursor: pointer;
+}
+
+.pe-taupop {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pe-pop-hint {
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1.45;
+  max-width: 230px;
 }
 
 .pe-stepper {
@@ -1321,7 +1355,7 @@ body {
   cursor: default;
 }
 
-/* ---------- Two dominant panes ---------- */
+/* ---------- Two dominant panes + draggable split ---------- */
 .pe-panes {
   flex: 1;
   min-height: 0;
@@ -1329,7 +1363,48 @@ body {
   gap: 14px;
 }
 
+.pe-panes-split {
+  gap: 0;
+}
+
+.pe-panes-split > .pe-pane-scan {
+  flex: 0 1 var(--pe-split, 50%);
+}
+
+.pe-panes-split > .pe-pane-md {
+  flex: 1 1 0;
+}
+
+.pe-split-divider {
+  flex: none;
+  width: 14px;
+  cursor: col-resize;
+  display: flex;
+  justify-content: center;
+  touch-action: none;
+}
+
+.pe-split-divider::before {
+  content: "";
+  width: 1px;
+  background: var(--line-strong);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.pe-split-divider:hover::before,
+.pe-split-divider:focus-visible::before,
+.pe-panes-dragging .pe-split-divider::before {
+  opacity: 1;
+}
+
+.pe-panes-dragging {
+  user-select: none;
+  cursor: col-resize;
+}
+
 .pe-pane {
+  position: relative;
   flex: 1 1 50%;
   min-width: 0;
   min-height: 0;
@@ -1349,18 +1424,6 @@ body {
   min-height: 42px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
-}
-
-.pe-pane-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  letter-spacing: 0.03em;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .pe-pane-tools {
@@ -1395,6 +1458,45 @@ body {
   text-align: center;
 }
 
+/* transient "Saved." / "Copied." chip, floating at the pane's top-right */
+.pe-pane-flash {
+  position: absolute;
+  top: 49px;
+  right: 10px;
+  z-index: 5;
+  padding: 4px 11px;
+  border-radius: 7px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.pe-pane-flash-on {
+  opacity: 1;
+}
+
+/* ---------- In-pane pager (scan head) ---------- */
+.pe-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  min-width: 0;
+}
+
+.pe-pager-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
 /* ---------- Zoom controls ---------- */
 .pe-zoom {
   display: inline-flex;
@@ -1414,6 +1516,13 @@ body {
   border-left: 1px solid var(--line);
 }
 
+.pe-zoom .pe-zoom-label {
+  min-width: 48px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
 /* ---------- Scan viewport (zoom/pan) ---------- */
 .pe-scanview {
   flex: 1;
@@ -1425,6 +1534,11 @@ body {
   touch-action: none;
 }
 
+.pe-scanview:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
 .pe-scanview-panning {
   cursor: grabbing;
 }
@@ -1433,6 +1547,66 @@ body {
   border: none;
   border-radius: 0;
   box-shadow: var(--shadow);
+}
+
+/* thin fading scroll indicators (visual only) */
+.pe-scanbar {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease 0.05s;
+}
+
+.pe-scanview.pe-scanbars-on .pe-scanbar {
+  opacity: 1;
+  transition: opacity 0.1s;
+}
+
+.pe-scanbar-v {
+  top: 3px;
+  bottom: 3px;
+  right: 3px;
+  width: 4px;
+}
+
+.pe-scanbar-h {
+  left: 3px;
+  right: 3px;
+  bottom: 3px;
+  height: 4px;
+}
+
+.pe-scanbar-thumb {
+  border-radius: 2px;
+  background: rgba(18, 18, 20, 0.35);
+}
+
+.pe-scanbar-v .pe-scanbar-thumb {
+  width: 100%;
+}
+
+.pe-scanbar-h .pe-scanbar-thumb {
+  height: 100%;
+}
+
+/* floating instruction chip while region-draw is armed / reading */
+.pe-scanhint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  max-width: calc(100% - 24px);
+  padding: 5px 13px;
+  border-radius: 999px;
+  background: rgba(18, 18, 20, 0.85);
+  color: var(--paper);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 /* ---------- Markdown pane: editor fills, left gutter for book-tabs ---------- */
@@ -1541,7 +1715,7 @@ body {
 .pe-block-flagged-caution { box-shadow: inset 3px 0 0 var(--caution); }
 .pe-block-linked { background: var(--bg); }
 
-/* ---------- Per-spot popover ---------- */
+/* ---------- Popovers + menus ---------- */
 .pe-pop {
   position: fixed;
   z-index: 1100;
@@ -1566,7 +1740,91 @@ body {
   flex-wrap: wrap;
 }
 
-/* ---------- Responsive: stack the panes on narrow viewports ---------- */
+.pe-pop-menu {
+  padding: 5px;
+}
+
+.pe-menu {
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+}
+
+.pe-menu-item {
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.pe-menu-item:hover:not(:disabled),
+.pe-menu-item:focus-visible {
+  background: var(--bg);
+}
+
+.pe-menu-item:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.pe-menu-danger:not(:disabled) {
+  color: var(--attention);
+}
+
+.pe-menu-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 4px 6px;
+}
+
+.pe-menu-note {
+  font-size: 11.5px;
+  color: var(--faint);
+  padding: 6px 10px 4px;
+}
+
+/* ---------- Responsive ---------- */
+
+/* Progressive top-bar icon-ification (no overflow menu; Stop keeps its text). */
+@media (max-width: 1140px) {
+  .pe-tb-deepall .pe-btn-label,
+  .pe-tb-dlall .pe-btn-label {
+    display: none;
+  }
+
+  .pe-tb-deepall,
+  .pe-tb-dlall {
+    padding: 6px 8px;
+  }
+}
+
+@media (max-width: 880px) {
+  .pe-tb-add .pe-btn-label {
+    display: none;
+  }
+
+  .pe-tb-add {
+    padding: 6px 8px;
+  }
+
+  .pe-topbar .pe-github,
+  .pe-topbar .pe-runsub {
+    display: none;
+  }
+}
+
+@media (max-width: 740px) {
+  .pe-topbar .pe-chip-deep {
+    display: none;
+  }
+}
+
+/* Stack the panes; the rail becomes an overlay drawer behind a scrim. */
 @media (max-width: 880px) {
   .pe-panes {
     flex-direction: column;
@@ -1574,5 +1832,45 @@ body {
 
   .pe-pane {
     flex: 1 1 auto;
+  }
+
+  .pe-split-divider {
+    display: none;
+  }
+
+  /* neutralize the persisted ratio when stacked */
+  .pe-panes-split > .pe-pane-scan,
+  .pe-panes-split > .pe-pane-md {
+    flex: 1 1 auto;
+  }
+
+  .pe-rail {
+    position: fixed;
+    top: var(--topbar-h);
+    bottom: 0;
+    left: 0;
+    z-index: 60;
+    width: var(--rail-w);
+    transform: translateX(-102%);
+    visibility: hidden;
+    transition: transform 0.18s ease, visibility 0s linear 0.18s;
+    box-shadow: var(--shadow);
+  }
+
+  .pe-rail.pe-rail-open {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.18s ease;
+  }
+
+  .pe-rail-scrim.pe-scrim-on {
+    display: block;
+    position: fixed;
+    top: var(--topbar-h);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(10, 10, 12, 0.35);
+    z-index: 59;
   }
 }

@@ -2,8 +2,13 @@
  * The workspace: a multi-file document manager and the app's working surface.
  * Users add images and PDFs; pages are persisted and processed one at a time by
  * the queue (models stay resident), survive reloads, and show up as tiles in a
- * thin horizontal carousel. Selecting a finished tile opens it in the review
- * surface — a zoomable scan beside the structured Markdown.
+ * collapsible left rail grouped by document. Selecting a finished tile opens it
+ * in the review surface — a zoomable scan beside the structured Markdown.
+ *
+ * The workspace owns two elements: `barEl` (the landing band with the full
+ * wordmark while there are no documents; a compact black top bar with status +
+ * global actions once there are) and `el` (the main row: rail + review host).
+ * On narrow viewports the rail becomes an overlay drawer behind a scrim.
  *
  * Reading depth is deliberately simple: Quick Read runs automatically on every
  * page; Deep Read is a per-page escalation offered from the review surface. There
@@ -39,10 +44,14 @@ import {
   type ReadMode,
 } from '../orchestrate/types.ts';
 import { ReviewSurface } from '../review/surface.ts';
+import { isEditableTarget } from '../review/keys.ts';
 import { showErrorModal, showModal } from './modal.ts';
 import { confirmDeepRead, DeepDeclined } from './deep-consent.ts';
 import { escapeHtml, fmtBytes } from './progress.ts';
 import { makeThumbUrl } from './thumbs.ts';
+import { fillLandingBand, githubLink, logoUrl } from './header.ts';
+import { readPref, writePref } from './prefs.ts';
+import { ICON_ADD, ICON_DEEP, ICON_DOWNLOAD, ICON_SIDEBAR, ICON_TRASH } from './icons.ts';
 import { CASE_CLOSED, deepPhaseMessage, SPECIALIST, stageMessage, WARM_DEFERRED, WARMING } from './copy.ts';
 import type { DeepPhaseKind, StageKey } from '../workers/protocol.ts';
 import type { Capabilities } from '../runtime/capabilities.ts';
@@ -51,7 +60,13 @@ import { reportError } from '../runtime/errors.ts';
 
 const ACCEPT = 'image/*,application/pdf,.pdf';
 
+/** Below this width the panes stack and the rail becomes an overlay drawer. */
+const DRAWER_MQ = '(max-width: 880px)';
+
 export class Workspace {
+  /** The top bar: landing band (no documents) or compact work bar. */
+  readonly barEl: HTMLElement;
+  /** The main row: rail + review host (or the empty-state dropzone). */
   readonly el: HTMLElement;
   private readonly queue: ProcessingQueue;
 
@@ -65,7 +80,8 @@ export class Workspace {
   private surface: ReviewSurface | null = null;
   private ready = false;
 
-  // app bar / status line
+  // top bar / status line
+  private barMode: 'landing' | 'work' | null = null;
   private runLight: HTMLElement | null = null;
   private runMode: HTMLElement | null = null;
   private runText: HTMLElement | null = null;
@@ -77,16 +93,21 @@ export class Workspace {
   private deepAllBtn: HTMLButtonElement | null = null;
   private stopBtn: HTMLButtonElement | null = null;
   private deepChip: HTMLButtonElement | null = null;
+  private railToggle: HTMLButtonElement | null = null;
 
-  // carousel + review host
-  private carouselEl: HTMLElement | null = null;
+  // rail + review host
+  private railEl: HTMLElement | null = null;
+  private railScrollEl: HTMLElement | null = null;
+  private scrimEl: HTMLElement | null = null;
   private reviewHost: HTMLElement | null = null;
+  private railCollapsed: boolean;
+  private drawerOpen = false;
+  private readonly drawerMQ: MediaQueryList;
 
   // thumbnails (lazy, cached, revoked on doc removal)
   private readonly thumbUrls = new Map<PageId, string>();
   private readonly thumbPending = new Set<PageId>();
   private thumbObserver: IntersectionObserver | null = null;
-  private carnavRO: ResizeObserver | null = null;
 
   // Deep Read (opt-in, per-page)
   private deep: DeepClient | null = null;
@@ -121,8 +142,18 @@ export class Workspace {
     this.queue.subscribe((e) => this.onQueueEvent(e));
 
     this.el = document.createElement('main');
-    this.el.className = 'pe-main';
+    this.el.className = 'pe-main pe-main-empty';
     this.installDropTarget(this.el);
+
+    this.barEl = document.createElement('header');
+    this.railCollapsed = readPref('pe.railCollapsed', (v): v is boolean => typeof v === 'boolean') ?? false;
+    this.drawerMQ = window.matchMedia(DRAWER_MQ);
+    this.drawerMQ.addEventListener('change', () => {
+      this.drawerOpen = false; // the drawer always starts closed
+      this.applyRailState();
+    });
+    window.addEventListener('keydown', this.onGlobalKey);
+    this.renderBar(); // landing band immediately, before init() resolves
   }
 
   /** Open storage, recover any interrupted work, render, and resume processing. */
@@ -310,7 +341,7 @@ export class Workspace {
 
   /** Escalate a set of pages to Deep Read: clear the consent + ~1.4 GB load gate
    *  once, re-mark every page `queued`, then enqueue them all in one deep batch.
-   *  The shared path behind the per-page button and the carousel's per-document /
+   *  The shared path behind the per-page button and the rail's per-document /
    *  Deep-Read-all actions. The queue processes them sequentially. */
   private async escalate(pages: PageRecord[]): Promise<void> {
     if (!pages.length) return;
@@ -358,13 +389,13 @@ export class Workspace {
     return out;
   }
 
-  /** Deep Read every Quick-Read page in one document (the carousel per-doc action). */
+  /** Deep Read every Quick-Read page in one document (the rail's per-doc action). */
   private async readDocDeep(doc: DocumentRecord): Promise<void> {
     const pages = await this.deepCandidates(this.pagesByDoc.get(doc.id) ?? []);
     this.confirmDeep(pages, `Deep Read “${doc.name}”`, 'this document');
   }
 
-  /** Deep Read every Quick-Read page across all documents (the app-bar action). */
+  /** Deep Read every Quick-Read page across all documents (the top-bar action). */
   private async readAllDeep(): Promise<void> {
     const all: PageRecord[] = [];
     for (const doc of this.docs) all.push(...(this.pagesByDoc.get(doc.id) ?? []));
@@ -409,24 +440,118 @@ export class Workspace {
   // ---------- rendering ----------
 
   private render(): void {
+    this.renderBar();
+    this.renderMain();
+  }
+
+  /** Swap the bar between the landing band and the compact work top bar. Short-
+   *  circuits when the mode is unchanged, so adding a document never rebuilds
+   *  the live status widgets mid-run. */
+  private renderBar(): void {
+    const mode: 'landing' | 'work' = this.docs.length ? 'work' : 'landing';
+    if (mode === this.barMode) return;
+    this.barMode = mode;
+    this.runLight = this.runMode = this.runText = this.runSub = null;
+    this.progressBar = this.progressFill = null;
+    this.addBtn = this.downloadAllBtn = this.deepAllBtn = this.stopBtn = this.deepChip = null;
+    this.railToggle = null;
+    if (mode === 'landing') {
+      this.barEl.className = 'pe-header';
+      fillLandingBand(this.barEl);
+    } else {
+      this.barEl.className = 'pe-topbar';
+      this.fillTopbar();
+      this.updateStatusBar();
+      this.updateDeepChip();
+    }
+  }
+
+  private fillTopbar(): void {
+    this.railToggle = button('', 'pe-iconbtn pe-rail-toggle', () => this.toggleRail());
+    this.railToggle.innerHTML = ICON_SIDEBAR;
+    this.railToggle.title = 'Hide or show the documents rail ( \\ )';
+    this.railToggle.setAttribute('aria-label', 'Hide or show the documents rail');
+    this.railToggle.setAttribute('aria-controls', 'pe-rail');
+
+    const brand = document.createElement('div');
+    brand.className = 'pe-topbar-brand';
+    brand.innerHTML = `<span class="pe-topbar-logo"><img src="${logoUrl}" alt="" /></span><span class="pe-topbar-name">Private Eye</span>`;
+
+    const status = document.createElement('div');
+    status.className = 'pe-run';
+    status.setAttribute('role', 'status');
+    this.runLight = document.createElement('span');
+    this.runLight.className = 'pe-runlight';
+    this.runMode = document.createElement('span');
+    this.runMode.className = 'pe-runmode';
+    this.runText = document.createElement('span');
+    this.runText.className = 'pe-runtext';
+    this.runSub = document.createElement('span');
+    this.runSub.className = 'pe-runsub';
+    const line = document.createElement('div');
+    line.className = 'pe-runline';
+    line.append(this.runLight, this.runMode, this.runText, this.runSub);
+    this.progressBar = document.createElement('div');
+    this.progressBar.className = 'pe-progress';
+    this.progressFill = document.createElement('div');
+    this.progressFill.className = 'pe-progress-fill';
+    this.progressBar.appendChild(this.progressFill);
+    status.append(line, this.progressBar);
+
+    const actions = document.createElement('div');
+    actions.className = 'pe-topbar-actions';
+    this.deepChip = button('', 'pe-chip-deep', () => this.unloadDeep());
+    this.deepChip.hidden = true;
+    this.addBtn = barBtn(ICON_ADD, 'Add files', 'pe-btn pe-tb-add', () => this.pickFiles());
+    this.stopBtn = button('Stop', 'pe-btn pe-tb-stop', () => this.queue.cancelAll());
+    this.stopBtn.hidden = true;
+    this.deepAllBtn = barBtn(ICON_DEEP, 'Deep Read all', 'pe-btn pe-tb-deepall', () => void this.readAllDeep());
+    this.downloadAllBtn = barBtn(
+      ICON_DOWNLOAD,
+      'Download all (ZIP)',
+      'pe-btn pe-btn-primary pe-tb-dlall',
+      () => void this.onDownloadAll(),
+    );
+    actions.append(this.deepChip, this.addBtn, this.stopBtn, this.deepAllBtn, this.downloadAllBtn, githubLink(30));
+
+    this.barEl.replaceChildren(this.railToggle, brand, status, actions);
+  }
+
+  /** (Re)build the main row. The review host is kept across work-mode re-renders
+   *  (only the rail is swapped), so adding files never resets an open review. */
+  private renderMain(): void {
     this.tileEls.clear();
     this.rollupEls.clear();
     this.thumbObserver?.disconnect();
     this.thumbObserver = null;
-    this.runLight = this.runMode = this.runText = this.runSub = null;
-    this.progressBar = this.progressFill = null;
-    this.addBtn = this.downloadAllBtn = this.stopBtn = this.deepChip = null;
-    this.carouselEl = this.reviewHost = null;
 
     if (this.docs.length === 0) {
+      this.teardownSurface();
+      this.railEl = this.railScrollEl = this.scrimEl = null;
+      this.reviewHost = null;
+      this.el.classList.add('pe-main-empty');
       this.el.replaceChildren(this.buildEmpty());
       return;
     }
 
-    this.el.replaceChildren(this.buildAppBar(), this.buildCarousel(), this.buildReviewHost());
+    this.el.classList.remove('pe-main-empty');
+    const prevRail = this.railEl;
+    const rail = this.buildRail();
+    let keptHost = false;
+    if (prevRail && prevRail.parentNode === this.el && this.reviewHost?.parentNode === this.el) {
+      prevRail.replaceWith(rail);
+      keptHost = true;
+    } else {
+      this.scrimEl = document.createElement('div');
+      this.scrimEl.className = 'pe-rail-scrim';
+      this.scrimEl.addEventListener('click', () => this.closeDrawer());
+      this.el.replaceChildren(rail, this.buildReviewHost(), this.scrimEl);
+    }
+    this.applyRailState();
     this.updateStatusBar();
-    this.updateDeepChip();
-    this.renderViewer();
+
+    const sel = this.selectedPageId ? this.pageMap.get(this.selectedPageId) : undefined;
+    if (!(keptHost && this.surface && sel && PROCESSED.has(sel.status))) this.renderViewer();
     this.observeVisibleThumbs();
   }
 
@@ -451,90 +576,47 @@ export class Workspace {
     return zone;
   }
 
-  /** The thin top bar: a live status line that names the running mode, a slim
-   *  progress bar, and the global actions (Add / Stop / Download all / Unload). */
-  private buildAppBar(): HTMLElement {
-    const bar = document.createElement('div');
-    bar.className = 'pe-appbar';
+  // ---------- rail (documents + page tiles) ----------
 
-    const status = document.createElement('div');
-    status.className = 'pe-run';
-    status.setAttribute('role', 'status');
-    this.runLight = document.createElement('span');
-    this.runLight.className = 'pe-runlight';
-    this.runMode = document.createElement('span');
-    this.runMode.className = 'pe-runmode';
-    this.runText = document.createElement('span');
-    this.runText.className = 'pe-runtext';
-    const line = document.createElement('div');
-    line.className = 'pe-runline';
-    line.append(this.runLight, this.runMode, this.runText);
-    this.runSub = document.createElement('div');
-    this.runSub.className = 'pe-runsub';
-    status.append(line, this.runSub);
-
-    this.progressBar = document.createElement('div');
-    this.progressBar.className = 'pe-progress';
-    this.progressFill = document.createElement('div');
-    this.progressFill.className = 'pe-progress-fill';
-    this.progressBar.appendChild(this.progressFill);
-
-    const actions = document.createElement('div');
-    actions.className = 'pe-appbar-actions';
-    this.deepChip = button('', 'pe-chip-deep', () => this.unloadDeep());
-    this.deepChip.hidden = true;
-    this.addBtn = button('Add files', 'pe-btn', () => this.pickFiles());
-    this.stopBtn = button('Stop', 'pe-btn', () => this.queue.cancelAll());
-    this.stopBtn.hidden = true;
-    this.deepAllBtn = button('Deep Read all', 'pe-btn', () => void this.readAllDeep());
-    this.downloadAllBtn = button('Download all (ZIP)', 'pe-btn pe-btn-primary', () => void this.onDownloadAll());
-    actions.append(this.deepChip, this.addBtn, this.stopBtn, this.deepAllBtn, this.downloadAllBtn);
-
-    bar.append(status, this.progressBar, actions);
-    return bar;
-  }
-
-  /** The document carousel: a thin, horizontally-scrollable filmstrip of page
-   *  thumbnails grouped by document. Deliberately bounded in height so the scan +
-   *  Markdown panes below get the page's width. */
-  private buildCarousel(): HTMLElement {
-    const scroller = document.createElement('div');
-    scroller.className = 'pe-carousel';
-    this.carouselEl = scroller;
-    // One shared observer keeps every group's page-nav (edge fades + chevrons) in
-    // sync; reset it on each rebuild so we never observe detached tile strips.
-    this.carnavRO?.disconnect();
-    this.carnavRO = new ResizeObserver((entries) => {
-      for (const e of entries) this.syncCarnav(e.target as HTMLElement);
-    });
-    for (const doc of this.docs) scroller.appendChild(this.buildDocGroup(doc));
-    const add = button('+', 'pe-tile-add', () => this.pickFiles());
+  /** The document rail: a collapsible left sidebar of page thumbnails in a 2-up
+   *  grid, grouped by document under a sticky per-document header. */
+  private buildRail(): HTMLElement {
+    const rail = document.createElement('aside');
+    rail.className = 'pe-rail';
+    rail.id = 'pe-rail';
+    rail.setAttribute('aria-label', 'Documents');
+    const scroll = document.createElement('div');
+    scroll.className = 'pe-rail-scroll';
+    for (const doc of this.docs) scroll.appendChild(this.buildRailDoc(doc));
+    const add = button('+ Add files', 'pe-rail-add', () => this.pickFiles());
     add.title = 'Add more images or PDFs';
-    add.setAttribute('aria-label', 'Add files');
-    scroller.appendChild(add);
-    return scroller;
+    scroll.appendChild(add);
+    rail.appendChild(scroll);
+    this.railEl = rail;
+    this.railScrollEl = scroll;
+    return rail;
   }
 
-  private buildDocGroup(doc: DocumentRecord): HTMLElement {
-    const group = document.createElement('section');
-    group.className = 'pe-cargroup';
+  private buildRailDoc(doc: DocumentRecord): HTMLElement {
+    const sec = document.createElement('section');
+    sec.className = 'pe-rail-doc';
 
     const head = document.createElement('div');
-    head.className = 'pe-cargroup-head';
+    head.className = 'pe-raildoc-head';
 
     const titles = document.createElement('div');
-    titles.className = 'pe-cargroup-titles';
+    titles.className = 'pe-raildoc-titles';
     const name = document.createElement('div');
-    name.className = 'pe-cargroup-name';
+    name.className = 'pe-raildoc-name';
     name.textContent = doc.name;
     name.title = doc.name;
     const rollup = document.createElement('div');
-    rollup.className = 'pe-cargroup-rollup';
+    rollup.className = 'pe-raildoc-rollup';
     this.rollupEls.set(doc.id, rollup);
     titles.append(name, rollup);
 
     const actions = document.createElement('div');
-    actions.className = 'pe-cargroup-actions';
+    actions.className = 'pe-raildoc-actions';
     const deep = button('', 'pe-iconbtn', () => void this.readDocDeep(doc));
     deep.title = 'Deep Read this document';
     deep.setAttribute('aria-label', `Deep Read ${doc.name}`);
@@ -549,39 +631,15 @@ export class Workspace {
     rm.innerHTML = ICON_TRASH;
     actions.append(deep, dl, rm);
 
-    const pages = this.pagesByDoc.get(doc.id) ?? [];
-    if (pages.length > 1) {
-      const count = document.createElement('div');
-      count.className = 'pe-cargroup-count';
-      count.textContent = `${pages.length} pages`;
-      head.append(titles, count, actions);
-    } else {
-      head.append(titles, actions);
-    }
+    head.append(titles, actions);
 
-    const tiles = document.createElement('div');
-    tiles.className = 'pe-cartiles';
-    for (const page of pages) tiles.appendChild(this.buildTile(page));
+    const thumbs = document.createElement('div');
+    thumbs.className = 'pe-rail-thumbs';
+    for (const page of this.pagesByDoc.get(doc.id) ?? []) thumbs.appendChild(this.buildTile(page));
 
-    // Wrap the fixed-width tile strip with hover-revealed page-nav chevrons. The
-    // chevrons are siblings of the strip so syncCarnav can reach them via DOM order.
-    const wrap = document.createElement('div');
-    wrap.className = 'pe-cartiles-wrap';
-    const prev = button('', 'pe-carnav pe-carnav-prev', () => this.pageTiles(tiles, -1));
-    prev.setAttribute('aria-label', 'Previous pages');
-    prev.tabIndex = -1;
-    prev.innerHTML = ICON_CHEVRON_LEFT;
-    const next = button('', 'pe-carnav pe-carnav-next', () => this.pageTiles(tiles, 1));
-    next.setAttribute('aria-label', 'Next pages');
-    next.tabIndex = -1;
-    next.innerHTML = ICON_CHEVRON_RIGHT;
-    wrap.append(prev, tiles, next);
-    tiles.addEventListener('scroll', () => this.syncCarnav(tiles), { passive: true });
-    this.carnavRO?.observe(tiles);
-
-    group.append(head, wrap);
+    sec.append(head, thumbs);
     this.updateRollup(doc.id);
-    return group;
+    return sec;
   }
 
   private buildTile(page: PageRecord): HTMLButtonElement {
@@ -621,30 +679,6 @@ export class Workspace {
     tile.title = `Page ${page.pageNo} — ${TILE_TITLE[page.status]}`;
   }
 
-  /** Advance the page filmstrip by ~one viewport, keeping a tile of overlap for
-   *  context. The strip is overflow:hidden and only ever moves here — never via a
-   *  scrollbar — so it can't fight the carousel's own horizontal scroll. */
-  private pageTiles(tiles: HTMLElement, dir: 1 | -1): void {
-    const step = Math.max(tiles.clientWidth - 68, 120);
-    tiles.scrollBy({ left: dir * step, behavior: 'smooth' });
-  }
-
-  /** Reflect scroll position onto the edge fades and chevron visibility. Driven by
-   *  the strip's scroll events and the ResizeObserver (which also fires once on
-   *  observe, supplying the initial state). */
-  private syncCarnav(tiles: HTMLElement): void {
-    const prev = tiles.previousElementSibling as HTMLElement | null;
-    const next = tiles.nextElementSibling as HTMLElement | null;
-    const max = tiles.scrollWidth - tiles.clientWidth;
-    const overflowing = max > 1;
-    const atStart = tiles.scrollLeft <= 1;
-    const atEnd = tiles.scrollLeft >= max - 1;
-    tiles.style.setProperty('--fade-l', !overflowing || atStart ? '0px' : '18px');
-    tiles.style.setProperty('--fade-r', !overflowing || atEnd ? '0px' : '22px');
-    if (prev) prev.hidden = !overflowing || atStart;
-    if (next) next.hidden = !overflowing || atEnd;
-  }
-
   private buildReviewHost(): HTMLElement {
     const host = document.createElement('div');
     host.className = 'pe-review-host';
@@ -652,12 +686,63 @@ export class Workspace {
     return host;
   }
 
+  // ---------- rail collapse / drawer ----------
+
+  /** Reflect the collapse/drawer state onto the DOM. The docked collapse and the
+   *  overlay drawer are scoped to opposite sides of the 880px media query, so
+   *  the two mechanisms never fight (the persisted pref is desktop-only). */
+  private applyRailState(): void {
+    const drawer = this.drawerMQ.matches;
+    this.railEl?.classList.toggle('pe-rail-collapsed', !drawer && this.railCollapsed);
+    this.railEl?.classList.toggle('pe-rail-open', drawer && this.drawerOpen);
+    this.scrimEl?.classList.toggle('pe-scrim-on', drawer && this.drawerOpen);
+    const expanded = drawer ? this.drawerOpen : !this.railCollapsed;
+    this.railToggle?.setAttribute('aria-expanded', String(expanded));
+  }
+
+  private toggleRail(): void {
+    if (this.drawerMQ.matches) {
+      this.drawerOpen = !this.drawerOpen;
+      if (!this.drawerOpen && this.railEl?.contains(document.activeElement)) this.railToggle?.focus();
+    } else {
+      this.railCollapsed = !this.railCollapsed;
+      writePref('pe.railCollapsed', this.railCollapsed);
+      // Collapsing hides the rail's tab stops — move focus out first.
+      if (this.railCollapsed && this.railEl?.contains(document.activeElement)) this.railToggle?.focus();
+    }
+    this.applyRailState();
+  }
+
+  private closeDrawer(): void {
+    if (!this.drawerOpen) return;
+    this.drawerOpen = false;
+    if (this.railEl?.contains(document.activeElement)) this.railToggle?.focus();
+    this.applyRailState();
+  }
+
+  /** Global keys the workspace owns: `\` toggles the rail/drawer (work mode
+   *  only), and an open drawer folds on Escape. Typing and modals always win. */
+  private readonly onGlobalKey = (e: KeyboardEvent): void => {
+    if (this.barMode !== 'work') return;
+    if (document.querySelector('.pe-modal-backdrop')) return;
+    if (e.key === 'Escape') {
+      // Escape is never claimed (no preventDefault) — just fold an open drawer.
+      if (this.drawerMQ.matches && this.drawerOpen) this.closeDrawer();
+      return;
+    }
+    if (e.key !== '\\' || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (isEditableTarget(e.target)) return;
+    e.preventDefault();
+    this.toggleRail();
+  };
+
   // ---------- thumbnails ----------
 
   /** (Re)observe every processed tile so its thumbnail loads when it scrolls into
-   *  view. PDF thumbnails rasterize on demand, so we only fetch what's visible. */
+   *  view. PDF thumbnails rasterize on demand, so we only fetch what's visible —
+   *  and a collapsed rail reports nothing intersecting, pausing thumb work. */
   private observeVisibleThumbs(): void {
-    if (!this.carouselEl) return;
+    if (!this.railScrollEl) return;
     this.thumbObserver?.disconnect();
     this.thumbObserver = new IntersectionObserver(
       (entries) => {
@@ -668,7 +753,7 @@ export class Workspace {
           if (id) void this.loadThumb(id);
         }
       },
-      { root: this.carouselEl, rootMargin: '300px' },
+      { root: this.railScrollEl, rootMargin: '300px' },
     );
     for (const [id, tile] of this.tileEls) {
       const page = this.pageMap.get(id);
@@ -690,7 +775,7 @@ export class Workspace {
     this.thumbPending.add(id);
     try {
       const blob = await pageImageBlob(doc, page);
-      const url = await makeThumbUrl(blob);
+      const url = await makeThumbUrl(blob, 180); // ~88px rail cells × 2dpr
       this.thumbUrls.set(id, url);
       this.setTileImg(id, url);
     } catch (e) {
@@ -718,7 +803,7 @@ export class Workspace {
 
     if (!this.selectedPageId) {
       host.innerHTML = `<div class="pe-viewer-empty">${escapeHtml(
-        'Select a finished page from the strip above to review what Private Eye read.',
+        'Select a finished page from the rail to review what Private Eye read.',
       )}</div>`;
       return;
     }
@@ -729,15 +814,20 @@ export class Workspace {
       return;
     }
 
+    const pageCount = (this.pagesByDoc.get(doc.id) ?? []).length;
     const surface = new ReviewSurface(
       doc,
       page,
       this.quick,
       () => void this.readPageDeep(page),
       (needs) => this.onReviewStatus(page.id, needs),
+      pageCount > 1
+        ? { pageNo: page.pageNo, pageCount, onNav: (dir) => this.selectAdjacent(page.id, dir) }
+        : null,
     );
     this.surface = surface;
     host.replaceChildren(surface.el);
+    this.syncSurfacePageNav();
     void surface.load().catch((e) => {
       showErrorModal({
         kind: 'Unknown',
@@ -757,7 +847,7 @@ export class Workspace {
   }
 
   /** Push a page's live review state (from its open review surface) back to the
-   *  carousel tile + persisted status, so resolving or reverting flagged spots —
+   *  rail tile + persisted status, so resolving or reverting flagged spots —
    *  or moving the sensitivity threshold — flips the indicator. Only ever toggles
    *  between the two "read successfully" states. */
   private onReviewStatus(pageId: PageId, needs: boolean): void {
@@ -785,6 +875,7 @@ export class Workspace {
     if (!page) return;
     if (PROCESSED.has(page.status)) {
       this.selectPage(pageId);
+      if (this.drawerMQ.matches) this.closeDrawer();
     } else if (page.status === 'error') {
       this.showPageError(page);
     } else if (page.status === 'cancelled') {
@@ -817,6 +908,37 @@ export class Workspace {
     tile?.classList.add('pe-selected');
     tile?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     this.renderViewer();
+  }
+
+  /** Step the review to this document's nearest read page in `dir` (skipping
+   *  unread/failed pages, no wrap), keeping keyboard focus on the scan so
+   *  `[` / `]` chain across pages. */
+  private selectAdjacent(from: PageId, dir: 1 | -1): void {
+    const next = this.adjacentReadPage(from, dir);
+    if (!next) return;
+    this.selectPage(next);
+    this.surface?.focusScan();
+  }
+
+  private adjacentReadPage(from: PageId, dir: 1 | -1): PageId | null {
+    const page = this.pageMap.get(from);
+    if (!page) return null;
+    const pages = this.pagesByDoc.get(page.docId) ?? [];
+    const i = pages.findIndex((p) => p.id === from);
+    if (i < 0) return null;
+    for (let j = i + dir; j >= 0 && j < pages.length; j += dir) {
+      if (PROCESSED.has(pages[j]!.status)) return pages[j]!.id;
+    }
+    return null;
+  }
+
+  /** Refresh the open surface's pager reach (e.g. a sibling page just finished). */
+  private syncSurfacePageNav(): void {
+    if (!this.surface || !this.selectedPageId) return;
+    this.surface.setPageNav(
+      this.adjacentReadPage(this.selectedPageId, -1) != null,
+      this.adjacentReadPage(this.selectedPageId, 1) != null,
+    );
   }
 
   private showPageError(page: PageRecord): void {
@@ -894,7 +1016,7 @@ export class Workspace {
 
   private onQueueEvent(e: QueueEvent): void {
     switch (e.type) {
-      case 'busy':
+      case 'busy': {
         this.currentPageId = e.pageId;
         this.currentMode = e.mode;
         this.currentStage = 'loading';
@@ -911,7 +1033,14 @@ export class Workspace {
         }
         this.updateDeepChip();
         this.updateStatusBar();
+        // Follow the active page in the rail — unless the user's pointer is in
+        // it (they're browsing; yanking the scroll would fight them).
+        const tile = this.tileEls.get(e.pageId);
+        if (tile && this.railScrollEl && !this.railScrollEl.matches(':hover')) {
+          tile.scrollIntoView({ block: 'nearest' });
+        }
         break;
+      }
       case 'stage':
         if (e.pageId === this.currentPageId) {
           this.currentStage = e.stage;
@@ -937,6 +1066,7 @@ export class Workspace {
         if (tile) this.applyTile(tile, e.page);
         this.updateRollup(e.page.docId);
         this.updateStatusBar();
+        this.syncSurfacePageNav(); // a sibling finishing can extend the pager's reach
         // A re-read can change a page's content: drop any stale thumbnail so it
         // regenerates, and refresh the open page if it just finished.
         if (PROCESSED.has(e.page.status)) {
@@ -1121,8 +1251,15 @@ function button(label: string, className: string, onClick: () => void): HTMLButt
   return b;
 }
 
-const ICON_DEEP = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.7 1.8L21.5 17.5l-1.8.7L19 20l-.7-1.8L16.5 17.5l1.8-.7z"/></svg>`;
-const ICON_DOWNLOAD = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 4 5-4"/><path d="M5 21h14"/></svg>`;
-const ICON_TRASH = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M9 7V5h6v2"/><path d="M7 7l1 13h8l1-13"/></svg>`;
-const ICON_CHEVRON_LEFT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`;
-const ICON_CHEVRON_RIGHT = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`;
+/** A top-bar action: icon + label, the label hideable by the responsive CSS. */
+function barBtn(icon: string, label: string, className: string, onClick: () => void): HTMLButtonElement {
+  const b = button('', className, onClick);
+  b.innerHTML = icon;
+  const text = document.createElement('span');
+  text.className = 'pe-btn-label';
+  text.textContent = label;
+  b.appendChild(text);
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  return b;
+}
